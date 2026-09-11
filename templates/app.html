@@ -791,16 +791,47 @@ $("#btn-classify").onclick = async ()=>{
 // ---------------- discover categories (Stage 3, Part 1+2) ----------------
 const D = {rows: [], busy: false};
 function discoverStatus(msg){ $("#discover-status").textContent = msg || ""; }
+function dIsError(p){
+  if(!p) return false;
+  const cats = p.categories || [];
+  if(cats.length) return false;
+  return !!(p.ai_error || p.provider_used === "none" ||
+    ["fallback_transient", "invalid_output", "not_configured",
+     "model_unavailable", "insufficient_signal"].indexOf(p.error_kind) >= 0);
+}
+function dTitle(s){ s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+function dDiag(p){
+  const d = p.diagnostics || {};
+  const status = (d.http_status === null || d.http_status === undefined)
+    ? "n/a" : d.http_status;
+  const retries = (d.retries === undefined || d.retries === null)
+    ? 0 : d.retries;
+  const err = String(d.error || p.ai_error || "").slice(0, 240);
+  return `provider: ${esc(d.provider || p.provider_requested || "gemini")} · ` +
+    `model: ${esc(d.model || p.model_requested || "?")} · ` +
+    `HTTP status: ${esc(String(status))} · retries: ${retries} · ` +
+    `error: ${esc(err || "(none reported)")}`;
+}
 function dRender(){
   const tb = $("#d-rows"); tb.innerHTML = "";
-  D.rows.forEach(r => {
-    if(r._del) return;
-    const unsorted = r.name.toLowerCase() === "unsorted / review";
+  const visible = D.rows.filter(r => !r._del);
+  if(!visible.length){
+    // Provider-error / invalid-output state: render NO fake rows.
+    tb.innerHTML = `<tr><td colspan="6" class="dim">` +
+      `No valid category proposals. Nothing was generated automatically. ` +
+      `Use “Retry with Gemini”, or explicitly choose “Use heuristic fallback” ` +
+      `(offline — not AI-generated).</td></tr>`;
+    $("#d-note").textContent = "0 categories";
+    return;
+  }
+  visible.forEach(r => {
+    const nm = r.name || "";
+    const unsorted = nm.toLowerCase() === "unsorted / review";
     const conf = (r.confidence === undefined || r.confidence === null) ? 0 : r.confidence;
     const ex = (r.examples||[]).map(x=>`<div title="${esc(x)}">${esc(x)}</div>`).join("");
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${unsorted ? `<b>${esc(r.name)}</b>` : `<input class="dname" value="${esc(r.name)}">`}</td>
+      <td>${unsorted ? `<b>${esc(nm)}</b>` : `<input class="dname" value="${esc(nm)}">`}</td>
       <td>${unsorted ? `<span class="dim">${esc(r.description||"")}</span>` : `<textarea class="ddesc">${esc(r.description||"")}</textarea>`}</td>
       <td class="dcount">${r.count ?? 0}</td>
       <td class="dconf">${Math.round(conf*100)}%</td>
@@ -813,13 +844,14 @@ function dRender(){
     }
     tb.appendChild(tr);
   });
-  const core = D.rows.filter(r => !r._del && r.name.toLowerCase() !== "unsorted / review").length;
+  const core = visible.filter(r =>
+    (r.name||"").toLowerCase() !== "unsorted / review").length;
   $("#d-note").textContent = core + " categories";
 }
 function dCollect(){
-  const tail = D.rows.find(r => r.name.toLowerCase() === "unsorted / review" && !r._del);
+  const tail = D.rows.find(r => (r.name||"").toLowerCase() === "unsorted / review" && !r._del);
   const cats = D.rows
-    .filter(r => !r._del && r.name.toLowerCase() !== "unsorted / review")
+    .filter(r => !r._del && (r.name||"").toLowerCase() !== "unsorted / review")
     .map(r => ({name: (r.name||"").trim(), description: (r.description||"").trim()}))
     .filter(r => r.name);
   if(tail) cats.push({name: tail.name, description: tail.description || ""});
@@ -832,66 +864,100 @@ function dStatusBadge(p, requested){
   if(retryBtn) retryBtn.style.display = "none";
   if(heurBtn) heurBtn.style.display = "none";
   if(!p){ if(box) box.innerHTML = ""; return; }
-  const kind = p.error_kind || (p.fallback ? "fallback_transient" : "succeeded");
   const used = p.provider_used || p.engine || "";
-  const fb = !!p.fallback;
+  const kind = p.error_kind || (p.fallback ? "fallback_transient" : "succeeded");
   let html = "", showRetry = false, showHeur = false;
-  if(!fb && (used === "gemini" || used === "groq" || used === "openrouter" || used === "ai")){
-    html = `<span class="badge high">✓ ${esc(used)} succeeded</span> <span class="dim">AI-generated proposal — review then Accept.</span>`;
-  } else if(fb && kind === "not_configured"){
-    html = `<span class="badge">⚙ ${esc(used === "heuristic" ? "heuristic" : used)} — Gemini not configured</span> <span class="dim">${esc(p.ai_error || "Set GEMINI_API_KEY and tick 'Use cloud AI' to use Gemini.")} This proposal is heuristic, not AI-generated.</span>`;
-    showRetry = true; showHeur = false;
-  } else if(fb && kind === "invalid_output"){
-    html = `<span class="badge lowconf">✗ Gemini returned invalid structured output — heuristic fallback</span> <span class="dim">${esc(p.ai_error || "")}</span>`;
+  if(dIsError(p)){
+    // Provider-error / invalid-output state. No proposals were produced
+    // (or generated) and none are displayed.
+    let label;
+    if(kind === "invalid_output"){
+      label = "✗ Invalid AI output — provider returned invalid structured output";
+    } else if(kind === "not_configured"){
+      label = "⚙ AI provider not configured";
+    } else if(kind === "model_unavailable"){
+      label = "✗ AI model unavailable";
+    } else if(kind === "insufficient_signal"){
+      label = "✗ Not enough valid categories — no proposal generated";
+    } else {
+      label = `✗ ${esc(dTitle(p.provider_requested || requested || "Gemini"))} failed — retry available`;
+    }
+    html = `<span class="badge lowconf">${label}</span> ` +
+      `<span class="dim">${esc(p.ai_error || "provider error")}</span>` +
+      `<div class="dim" style="margin-top:4px">${dDiag(p)}</div>` +
+      `<div class="dim" style="margin-top:4px">These results are <b>not AI-generated</b>. ` +
+      `Nothing was auto-substituted. Retry with Gemini, or explicitly select ` +
+      `the offline heuristic fallback below.</div>`;
     showRetry = true; showHeur = true;
-  } else if(fb){
-    html = `<span class="badge med">⚠ heuristic fallback — Gemini failed</span> <span class="dim">${esc(p.ai_error || "provider error")} · retries: ${p.diagnostics ? p.diagnostics.retries : 0}. This proposal is heuristic, not AI-generated.</span>`;
-    showRetry = true; showHeur = true;
+  } else if(used === "gemini" || used === "groq" || used === "openrouter" || used === "ai"){
+    html = `<span class="badge high">✓ ${esc(dTitle(used))} succeeded</span> ` +
+      `<span class="dim">AI-generated proposal — review, edit, then Accept.</span>`;
+  } else if(used === "heuristic"){
+    html = `<span class="badge med">heuristic fallback selected manually</span> ` +
+      `<span class="dim">Offline proposal — <b>not AI-generated</b>, never sent anywhere. ` +
+      `Review, edit, then Accept.</span>`;
   } else {
-    html = `<span class="badge">heuristic (offline)</span> <span class="dim">Offline proposal — never sent anywhere.</span>`;
+    html = `<span class="badge">${esc(used || "proposal")}</span>`;
   }
-  if(p.cloud_gate) html += ` <span class="dim">${esc(p.cloud_gate)}</span>`;
+  if(p.rejected_count && !dIsError(p)){
+    html += ` <span class="dim">(${p.rejected_count} invalid proposal(s) rejected)</span>`;
+  }
+  if(p.cloud_gate){
+    html += ` <span class="dim">${esc(p.cloud_gate)}</span>`;
+  }
   box.innerHTML = html;
   if(showRetry && retryBtn) retryBtn.style.display = "";
   if(showHeur && heurBtn) heurBtn.style.display = "";
 }
 function dMetaText(p, requested){
-  const fb = p.fallback ? " (AI failed → heuristic fallback" +
-    (p.ai_error ? ": " + p.ai_error : "") + ")" : "";
-  return `collection: ${p.collection_size} bookmarks · requested: ${requested || p.engine_requested || p.engine} · engine: ${p.engine}${fb}` +
+  if(!p) return "";
+  const err = dIsError(p) ? " · provider-error state (no AI proposal)" : "";
+  const eng = p.provider_used && p.provider_used !== "none"
+    ? p.provider_used : p.engine;
+  return `collection: ${p.collection_size} bookmarks · requested: ` +
+    `${requested || p.engine_requested || p.engine} · engine: ${eng}${err}` +
+    (p.stage_a_themes ? ` · stage A themes: ${p.stage_a_themes}` : "") +
     (p.accepted ? " · a previously accepted structure exists" : "") +
     `\nThese are LOCAL folders (not X folders). ✕ removes a proposal row before Accept.`;
+}
+function dApply(j, requested){
+  const p = j.proposal;
+  D.rows = (p.categories || []).slice();
+  $("#d-meta").textContent = dMetaText(p, requested);
+  dStatusBadge(p, requested);
+  dRender();
+  $("#discover-modal").classList.add("open");
 }
 async function doDiscover(){
   if(D.busy) return;
   D.busy = true;
   $("#btn-discover").disabled = true;
-  discoverStatus("Analyzing the whole library locally, then asking the AI… (heuristic fallback if AI fails)");
+  discoverStatus("Analyzing the whole library locally, then asking the AI… (no silent fallback)");
   try{
     const engine = aiEngine();
     const j = await post("/api/discover", {engine, cloud_ok: cloudOk()});
-    D.rows = (j.proposal.categories||[]).slice();
-    $("#d-meta").textContent = dMetaText(j.proposal, engine);
-    dStatusBadge(j.proposal, engine);
-    dRender();
-    $("#discover-modal").classList.add("open");
-    discoverStatus(`proposal ready [${j.proposal.engine}] — review, edit, ✕ to delete rows, then Accept`);
+    dApply(j, engine);
+    if(dIsError(j.proposal)){
+      discoverStatus("discovery failed — no proposal generated. Retry with Gemini or use the explicit heuristic fallback.");
+    } else {
+      discoverStatus(`proposal ready [${j.proposal.provider_used || j.proposal.engine}] — review, edit, ✕ to delete rows, then Accept`);
+    }
     await refreshState();
-  }catch(e){ toast("Discover: " + e.message + " (proposal preserved if it completed — reopen to check)"); discoverStatus("failed: " + e.message); }
+  }catch(e){ toast("Discover: " + e.message); discoverStatus("failed: " + e.message); }
   D.busy = false; $("#btn-discover").disabled = false;
 }
 async function doRetryGemini(){
   if(D.busy) return;
   D.busy = true;
-  discoverStatus("Retrying with Gemini from the saved collection (no re-upload)…");
+  discoverStatus("Retrying with Gemini from the saved collection (no re-upload, no auto-accept)…");
   try{
     const j = await post("/api/discover/retry", {cloud_ok: cloudOk()});
-    D.rows = (j.proposal.categories||[]).slice();
-    $("#d-meta").textContent = dMetaText(j.proposal, j.proposal.engine_requested || "gemini");
-    dStatusBadge(j.proposal, "gemini");
-    dRender();
-    $("#discover-modal").classList.add("open");
-    discoverStatus(`retry ready [${j.proposal.engine}] — review, edit, then Accept (nothing auto-accepted)`);
+    dApply(j, "gemini");
+    if(dIsError(j.proposal)){
+      discoverStatus("retry failed — no proposal generated. Retry again or use the explicit heuristic fallback.");
+    } else {
+      discoverStatus(`retry ready [${j.proposal.provider_used || j.proposal.engine}] — review, edit, then Accept (nothing auto-accepted)`);
+    }
     await refreshState();
   }catch(e){ toast("Retry: " + e.message); discoverStatus("retry failed: " + e.message); }
   D.busy = false;
@@ -902,28 +968,37 @@ async function doHeuristic(){
   discoverStatus("Generating explicit heuristic proposal (offline)…");
   try{
     const j = await post("/api/discover/heuristic", {});
-    D.rows = (j.proposal.categories||[]).slice();
-    $("#d-meta").textContent = dMetaText(j.proposal, "heuristic");
-    dStatusBadge(j.proposal, "heuristic");
-    dRender();
-    $("#discover-modal").classList.add("open");
-    discoverStatus("heuristic proposal ready — review then Accept (not AI-generated)");
+    dApply(j, "heuristic");
+    if(dIsError(j.proposal)){
+      discoverStatus("heuristic fallback produced no valid proposal: " + (j.proposal.ai_error || ""));
+    } else {
+      discoverStatus("heuristic fallback ready — review then Accept (not AI-generated)");
+    }
     await refreshState();
   }catch(e){ toast("Heuristic: " + e.message); discoverStatus("heuristic failed: " + e.message); }
   D.busy = false;
 }
 async function restoreProposal(){
   try{
-    const j = await api("/api/discover");
+    // Plain fetch: the endpoint returns an "error"/"message" field for the
+    // stored provider-error state, which api() would treat as fatal.
+    const r = await fetch("/api/discover", {credentials: "same-origin"});
+    const j = await r.json();
     if(j.ok && j.proposal){
-      D.rows = (j.proposal.categories||[]).slice();
-      $("#d-meta").textContent =
-        `collection: ${j.proposal.collection_size} bookmarks · engine: ${j.proposal.engine}` +
-        (j.proposal.accepted ? " · accepted" : " · not accepted yet");
-      dStatusBadge(j.proposal, j.proposal.engine_requested || j.proposal.engine);
-      dRender();
+      dApply({proposal: j.proposal},
+             j.proposal.engine_requested || j.proposal.engine);
       discoverStatus("last proposal: " +
         (j.proposal.accepted ? "accepted ✓" : "review & accept to enable classification"));
+    } else if(j.error || j.message){
+      const err = j.error || j.message;
+      D.rows = [];
+      dRender();
+      dStatusBadge({provider_requested: "gemini", provider_used: "none",
+                    error_kind: "fallback_transient", ai_error: err,
+                    diagnostics: {provider: "gemini", model: "",
+                                  http_status: null, retries: 0,
+                                  error: err}}, "gemini");
+      discoverStatus("last attempt: " + err);
     } else {
       discoverStatus("");
     }

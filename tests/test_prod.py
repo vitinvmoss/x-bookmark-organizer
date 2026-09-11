@@ -201,16 +201,54 @@ class ProviderUnitTest(unittest.TestCase):
         return real
 
     def test_gemini_success_discover(self):
-        from xbookmark import categories as CZ, demo as DEMO
+        from xbookmark import categories as CZ, demo as DEMO, store as ST
         import tempfile as _t
         kb = os.path.join(_t.mkdtemp(prefix="xbo-gem-"), "kb")
         DEMO.run(kb, n=20)
-        real = self._fake_success("gemini")
+        ids = list(ST.load_bookmarks(kb))
+        real = LLM.chat_text
+
+        def fake(prov, messages, model=None, timeout=None):
+            sys_msg = " ".join(m.get("content", "") for m in messages
+                               if m.get("role") == "system")
+            if "recurring themes" in sys_msg:
+                return json.dumps({"themes": [
+                    {"theme": "AI prompting",
+                     "description": "LLM prompting techniques.",
+                     "evidence_ids": ids[:3], "approx_count": 7},
+                    {"theme": "Crypto markets",
+                     "description": "Bitcoin analysis.",
+                     "evidence_ids": ids[3:6], "approx_count": 7},
+                    {"theme": "Software engineering",
+                     "description": "Rust and async patterns.",
+                     "evidence_ids": ids[6:9], "approx_count": 6},
+                ]})
+            return json.dumps({"categories": [
+                {"name": "AI Prompting",
+                 "description": "Prompts, LLMs and model tricks.",
+                 "estimated_count": 7, "representative_ids": ids[:3],
+                 "examples": [], "confidence": 0.82},
+                {"name": "Crypto Markets",
+                 "description": "Bitcoin and market analysis.",
+                 "estimated_count": 7, "representative_ids": ids[3:6],
+                 "examples": [], "confidence": 0.78},
+                {"name": "Software Engineering",
+                 "description": "Rust, async and code patterns.",
+                 "estimated_count": 6, "representative_ids": ids[6:9],
+                 "examples": [], "confidence": 0.74},
+            ]})
+        LLM.chat_text = fake
         try:
             p = CZ.discover_structure(kb, engine="gemini")
         finally:
             LLM.chat_text = real
         self.assertEqual(p["provider_used"], "gemini")
+        self.assertEqual(p["error_kind"], "succeeded")
+        core = [c for c in p["categories"]
+                if c["name"] != "Unsorted / Review"]
+        self.assertGreaterEqual(len(core), 3)
+        self.assertTrue(all(c["name"].strip() for c in core))
+        self.assertTrue(all(c["description"].strip() for c in core))
 
     def test_gemini_error_codes_fallback(self):
         from xbookmark import classify as CL, demo as DEMO, categories as CZ
@@ -645,11 +683,13 @@ class GeminiRetryTest(unittest.TestCase):
             p = CZ.discover_structure(kb, engine="gemini")
         finally:
             LLM.chat_text = real
-        self.assertEqual(p["engine"], "heuristic")
+        # Invalid AI output -> explicit error state, no proposals (never
+        # fake heuristic rows labeled as AI).
         self.assertTrue(p["fallback"])
         self.assertEqual(p["error_kind"], "invalid_output")
         self.assertIn("invalid", p["ai_error"].lower())
-        self.assertTrue(p["categories"])
+        self.assertEqual(p["categories"], [])
+        self.assertEqual(p["provider_used"], "none")
 
 
 class DiscoveryQualityTest(unittest.TestCase):
@@ -759,6 +799,91 @@ class DiscoveryQualityTest(unittest.TestCase):
         self.assertIn("heuristic fallback", low)
         self.assertIn("not configured", low)
         self.assertIn("invalid structured output", low)
+
+    def test_discover_heuristic_endpoint_valid_names(self):
+        c, tok = _authed()
+        H = {"X-CSRF-Token": tok}
+        c.post("/api/demo", json={"n": 40, "csrf_token": tok}, headers=H)
+        r = c.post("/api/discover/heuristic", json={"csrf_token": tok},
+                   headers=H)
+        self.assertEqual(r.status_code, 200)
+        p = r.get_json()["proposal"]
+        self.assertTrue(p.get("explicit_heuristic"))
+        core = [x for x in p["categories"]
+                if x["name"] != "Unsorted / Review"]
+        self.assertGreaterEqual(len(core), 3)
+        for x in core:
+            self.assertTrue(x["name"].strip())
+            self.assertTrue(x["description"].strip())
+            self.assertGreater(x["estimated_count"], 0)
+            self.assertNotAlmostEqual(x["confidence"], 0.5, places=9)
+
+    def test_discover_hosted_failure_no_proposals(self):
+        c, tok = _authed()
+        H = {"X-CSRF-Token": tok}
+        c.post("/api/demo", json={"n": 40, "csrf_token": tok}, headers=H)
+        os.environ["GEMINI_API_KEY"] = "test-gemini-key-xyz"
+        real = LLM.chat_text
+
+        def boom(*a, **k):
+            raise urllib.error.HTTPError(
+                "http://gemini", 503, "E", {},
+                io.BytesIO(b'{"error": {"message": "overloaded"}}'))
+        LLM.chat_text = boom
+        try:
+            r = c.post("/api/discover",
+                       json={"engine": "gemini", "cloud_ok": True,
+                             "csrf_token": tok}, headers=H)
+        finally:
+            LLM.chat_text = real
+            os.environ.pop("GEMINI_API_KEY", None)
+        self.assertEqual(r.status_code, 200)
+        p = r.get_json()["proposal"]
+        self.assertEqual(p["categories"], [])
+        self.assertEqual(p["provider_used"], "none")
+        self.assertEqual(p["error_kind"], "fallback_transient")
+        self.assertEqual(p["diagnostics"]["http_status"], 503)
+        self.assertTrue(p["heuristic_available"])
+        self.assertNotIn("test-gemini-key-xyz", json.dumps(p))
+
+    def test_discover_gemini_requires_optin(self):
+        c, tok = _authed()
+        H = {"X-CSRF-Token": tok}
+        # No silent heuristic substitution: hosted discovery without the
+        # explicit cloud opt-in is refused.
+        r = c.post("/api/discover",
+                   json={"engine": "gemini", "csrf_token": tok}, headers=H)
+        self.assertEqual(r.status_code, 400)
+
+    def test_discover_error_state_get_is_informative(self):
+        c, tok = _authed()
+        H = {"X-CSRF-Token": tok}
+        # ensure no good proposal is being preserved by this run
+        from xbookmark import store as _ST
+        try:
+            os.remove(_ST.kb_path(SRV.kb(), "category_structure.json"))
+        except OSError:
+            pass
+        os.environ["GEMINI_API_KEY"] = "test-gemini-key-xyz"
+        real = LLM.chat_text
+
+        def boom(*a, **k):
+            raise urllib.error.HTTPError(
+                "http://gemini", 503, "E", {},
+                io.BytesIO(b'{"error": {"message": "overloaded"}}'))
+        LLM.chat_text = boom
+        try:
+            c.post("/api/discover",
+                   json={"engine": "gemini", "cloud_ok": True,
+                         "csrf_token": tok}, headers=H)
+        finally:
+            LLM.chat_text = real
+            os.environ.pop("GEMINI_API_KEY", None)
+        # A failed run must not persist fake proposals; GET reports the
+        # error rather than pretending a proposal exists.
+        j = c.get("/api/discover").get_json()
+        self.assertFalse(j["ok"])
+        self.assertTrue(j.get("error") or j.get("message"))
 
 
 if __name__ == "__main__":

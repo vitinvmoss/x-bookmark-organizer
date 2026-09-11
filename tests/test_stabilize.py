@@ -249,10 +249,14 @@ class AiFallbackTest(unittest.TestCase):
             payload = CZ.discover_structure(kb, engine="ai")
         finally:
             AI.chat_json = real
+        # Provider failure -> explicit error state with no proposals by
+        # default (heuristic must be requested explicitly).
         self.assertEqual(payload["engine"], "heuristic")
         self.assertTrue(payload["fallback"])
         self.assertIn("502", payload["ai_error"])
-        self.assertTrue(payload["categories"])
+        self.assertEqual(payload["categories"], [])
+        self.assertEqual(payload["provider_used"], "none")
+        self.assertTrue(payload["heuristic_available"])
 
     def test_ai_timeout_bounded(self):
         from xbookmark import ai as AI

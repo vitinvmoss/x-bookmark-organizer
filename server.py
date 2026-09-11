@@ -192,8 +192,9 @@ def create_app():
         key_env = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
                    "openrouter": "OPENROUTER_API_KEY"}.get(engine, "")
         if key_env and not os.environ.get(key_env):
-            return jsonify({"error": "%s not configured; using heuristic "
-                                     "instead" % engine,
+            return jsonify({"error": "%s not configured (set %s); choose "
+                                     "the offline heuristic explicitly if "
+                                     "desired" % (engine, key_env),
                             "fallback": "heuristic"}), 400
         return None
 
@@ -914,8 +915,12 @@ def create_app():
     def api_discover():
         body = _body()
         engine = engine_for(body)
+        # Hosted discovery must be explicitly opted in + key-configured.
+        # Never (silently) substitute heuristic output: the client shows
+        # the opt-in/configuration error state instead.
         gate = ensure_cloud_opt_in(engine, body)
-        eff = "heuristic" if gate else engine
+        if gate:
+            return gate
         try:
             min_c = int(body.get("min_categories") or 8)
             max_c = int(body.get("max_categories") or 15)
@@ -923,14 +928,11 @@ def create_app():
             min_c, max_c = 8, 15
         try:
             res = CAT.discover_structure(
-                kb(), engine=eff, model=body.get("model"),
+                kb(), engine=engine, model=body.get("model"),
                 min_categories=max(1, min(min_c, 30)),
                 max_categories=max(1, min(max_c, 30)))
         except SystemExit as e:
             return jsonify({"error": str(e)[:300]}), 400
-        if gate:
-            res = dict(res, cloud_gate="heuristic fallback (opt-in "
-                                       "required)")
         return jsonify({"ok": True, "proposal": res})
 
     @app.post("/api/discover/retry")

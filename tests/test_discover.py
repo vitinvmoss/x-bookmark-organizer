@@ -68,11 +68,20 @@ class DiscoverStructureTest(unittest.TestCase):
         cats = payload["categories"]
         self.assertLessEqual(len(cats), 20)
         self.assertGreaterEqual(len(cats), 2)
-        self.assertTrue(any(c["name"] == "Unsorted / Review"
-                            for c in cats))
         core = [c for c in cats if c["name"] != "Unsorted / Review"]
+        # every proposal is complete and meaningful (no blank rows,
+        # no zero-count placeholders, no bare-0.5 confidence)
+        self.assertTrue(all(c["name"].strip() for c in core))
+        self.assertTrue(all(c["description"].strip() for c in core))
         self.assertTrue(all(c["count"] > 0 for c in core))
         self.assertTrue(any(c["examples"] for c in core))
+        self.assertTrue(all(abs(c["confidence"] - 0.5) > 1e-9
+                            for c in core))
+        # "Unsorted / Review" is a computed bucket: present only when
+        # the offline pass genuinely left items unclassified.
+        has_unsorted = any(c["name"] == "Unsorted / Review" for c in cats)
+        self.assertEqual(has_unsorted,
+                         payload["signal_summary"]["unclustered"] > 0)
         for c in cats:
             self.assertLessEqual(c["confidence"], 1.0)
             self.assertGreaterEqual(c["confidence"], 0.0)
