@@ -13,7 +13,11 @@ services:
       - key: FLASK_ENV
         value: production
       - key: LLM_PROVIDER
-        value: gemini
+        value: auto
+      - key: LLM_FALLBACK_PROVIDERS
+        value: gemini,groq,openrouter
+      - key: LLM_ALLOW_HEURISTIC_FALLBACK
+        value: "false"
       - key: GEMINI_MODEL
         value: gemini-3.8-flash
       - key: DATA_DIR
@@ -21,7 +25,8 @@ services:
       # Set these in the Render dashboard (never in git):
       # SESSION_SECRET, APP_USERNAME, APP_PASSWORD_HASH,
       # GEMINI_API_KEY, GROQ_API_KEY, GROQ_MODEL,
-      # OPENROUTER_API_KEY, OPENROUTER_MODEL, APP_BASE_URL
+      # OPENROUTER_API_KEY, OPENROUTER_MODEL,
+      # OPENROUTER_SITE_URL, OPENROUTER_APP_NAME, APP_BASE_URL
     disk:
       name: xbookmarks-data
       mountPath: /var/data

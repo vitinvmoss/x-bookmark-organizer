@@ -240,12 +240,16 @@ target is `server.py` (Flask + gunicorn):
 
 | Var | Purpose | Default |
 |---|---|---|
-| `LLM_PROVIDER` | default AI provider: `gemini`/`groq`/`openrouter`/`heuristic` | `gemini` |
+| `LLM_PROVIDER` | provider mode: `auto`/`gemini`/`groq`/`openrouter`/`heuristic` | `auto` |
+| `LLM_FALLBACK_PROVIDERS` | deterministic order tried in `auto` mode | `gemini,groq,openrouter` |
+| `LLM_ALLOW_HEURISTIC_FALLBACK` | allow the offline heuristic as the final `auto` fallback | `false` |
 | `GEMINI_API_KEY` | Google Gemini key (server-side only) | empty |
 | `GEMINI_MODEL` | Gemini model | `gemini-3.8-flash` |
 | `GEMINI_TIMEOUT` | per-request timeout s (5–60) | `25` |
-| `GROQ_API_KEY` / `GROQ_MODEL` | optional Groq fallback | `llama-3.1-8b-instant` |
-| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | optional OpenRouter fallback | `meta-llama/llama-3.1-8b-instruct:free` |
+| `GROQ_API_KEY` / `GROQ_MODEL` | Groq (OpenAI-compatible) | `llama-3.1-8b-instant` |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | OpenRouter (OpenAI-compatible) | `openai/gpt-oss-20b:free` |
+| `OPENROUTER_SITE_URL` | optional OpenRouter `HTTP-Referer` attribution | empty |
+| `OPENROUTER_APP_NAME` | optional OpenRouter `X-Title` attribution | empty |
 | `SESSION_SECRET` | Flask session signing secret (required in prod) | — |
 | `APP_USERNAME` | single-account login name | — |
 | `APP_PASSWORD_HASH` | werkzeug hash, e.g. `python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('pw'))"` | — |
@@ -258,18 +262,44 @@ never commit passwords. `render.yaml` contains no secrets.
 
 ### AI providers
 
-- Default provider is **Gemini** (`gemini-3.8-flash`, free Flash tier).
-- Configure: set `GEMINI_API_KEY` (+ optional `GEMINI_MODEL`); Groq and
-  OpenRouter work the same way via their `_API_KEY`/`_MODEL` vars.
-- Only one key is required. If the selected hosted provider fails
-  (400/401/403/429/5xx, timeout, connection failure, malformed JSON,
-  quota), the batch falls back to the offline heuristic automatically
-  (max one controlled retry). A second hosted fallback is used only when
-  its key is configured.
-- Cloud AI is **opt-in and off by default**: the UI defaults to
-  heuristic; ticking “Use cloud AI” sends bookmark text to the selected
-  provider. “Test AI connection” checks config + connectivity without
-  revealing secrets.
+Providers are isolated behind a small adapter interface in
+`xbookmark/llm.py` (Gemini, Groq, OpenRouter, plus the offline
+heuristic), so new providers can be added without touching
+`categories.py`.
+
+- **`LLM_PROVIDER=auto`** (recommended): try only the providers that
+  actually have an API key, in the deterministic
+  `LLM_FALLBACK_PROVIDERS` order (default `gemini,groq,openrouter`).
+  A provider is skipped when its key is missing. One provider is
+  considered successful only when the HTTP call succeeds, JSON parses,
+  the required structure exists, strict validation passes, and at least
+  three valid categories remain. On a retryable failure
+  (429/500/502/503/504/timeout) or invalid structured output, discovery
+  moves to the next configured provider.
+- **Explicit mode** (`LLM_PROVIDER=gemini`, `=groq`, `=openrouter`,
+  `=heuristic`) still works: exactly that provider is used and no other
+  provider is invoked.
+- Each provider performs **at most one controlled retry** for transient
+  errors. Non-retryable 400/401/403/404 / invalid-model errors fail fast
+  and let auto mode continue. The whole fallback chain runs once per
+  discovery attempt (bounded).
+- **The offline heuristic never runs automatically** unless
+  `LLM_ALLOW_HEURISTIC_FALLBACK=true` (it is then the final entry in the
+  auto chain) or the user explicitly chooses “Use heuristic fallback”.
+  A heuristic proposal is always labeled as **not AI-generated**.
+- Cloud AI is **opt-in and off by default**. Ticking “Use cloud AI”
+  sends compact/truncated bookmark lines to the selected provider.
+- “Test AI connection” uses a tiny harmless prompt (never the
+  collection). In `auto` mode it tests the configured chain in order and
+  stops at the first success, reporting each attempt
+  (e.g. `Gemini — 503 · Groq — OK · OpenRouter — not attempted`).
+- **Secrets** travel server-side only and are never logged: diagnostics
+  retain only provider, model, HTTP status, error kind, a truncated
+  error message, retry count, duration, and success.
+- A successful discovery reports which provider actually produced the
+  result and the fallback chain. If every configured provider fails the
+  UI shows each attempt and offers **Retry AI** / **Use heuristic
+  fallback** — it never silently substitutes heuristic categories.
 
 ### Phone workflow
 

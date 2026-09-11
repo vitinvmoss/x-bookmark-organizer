@@ -34,7 +34,8 @@ from xbookmark import ai as LEGACY_AI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-ALLOWED_ENGINES = {"gemini", "groq", "openrouter", "heuristic", "ai"}
+ALLOWED_ENGINES = {"auto", "gemini", "groq", "openrouter", "heuristic",
+                   "ai"}
 
 REVIEW_EXPLAINER = ("Needs Review contains bookmarks whose classification is "
                     "uncertain, usually because confidence is below 0.60, or "
@@ -179,16 +180,34 @@ def create_app():
             eng = "heuristic"
         return eng
 
+    def classify_engine_for(body):
+        """Classification resolves auto to the first configured hosted
+        provider (or the offline heuristic) so the batched classifier
+        keeps its existing single-provider behavior."""
+        eng = engine_for(body)
+        if eng == "auto":
+            return LLM.primary_hosted_provider() or "heuristic"
+        return eng
+
     def ensure_cloud_opt_in(engine, body):
         """Hosted engines require explicit opt-in + configured key."""
         if engine in ("heuristic",):
             return None
         if engine == "ai":
-            engine = "gemini"
+            engine = "auto"
         if not ((body or {}).get("cloud_ok") is True):
             return jsonify({"error": "cloud AI requires opt-in "
                                      "(tick 'Use cloud AI' — bookmark text "
                                      "is sent to the hosted provider)"}), 400
+        if engine == "auto":
+            if not LLM.configured_hosted_providers():
+                return jsonify({
+                    "error": "no AI provider is configured for auto mode; "
+                             "add GEMINI_API_KEY, GROQ_API_KEY, or "
+                             "OPENROUTER_API_KEY, or choose the offline "
+                             "heuristic explicitly",
+                    "fallback": "heuristic"}), 400
+            return None
         key_env = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
                    "openrouter": "OPENROUTER_API_KEY"}.get(engine, "")
         if key_env and not os.environ.get(key_env):
@@ -330,36 +349,49 @@ def create_app():
     @login_required
     @require_csrf
     def api_ai_test():
+        """Safe connection test. Never sends the bookmark collection.
+
+        Auto mode tests the configured fallback chain in order and stops
+        at the first success (later providers are reported as not
+        attempted). Heuristic is an offline no-op success. A manually
+        selected but unconfigured provider returns an actionable message.
+        """
         body = request.get_json(silent=True) or {}
         provider = str(body.get("provider") or LLM.provider_default()
                        ).lower()
-        if provider not in ("gemini", "groq", "openrouter"):
+        if provider not in ("auto", "gemini", "groq", "openrouter",
+                            "heuristic"):
             return jsonify({"ok": False,
                             "error": "unknown provider"}), 400
-        cfg = LLM.configured_provider_status()
-        if not cfg.get(provider, {}).get("configured"):
-            return jsonify({"ok": False, "provider": provider,
-                            "configured": False,
-                            "error": "%s API key not configured" % provider,
-                            "model": cfg[provider]["model"]}), 200
-        model = body.get("model") or cfg[provider]["model"]
-        try:
-            txt = LLM.chat_text(
-                provider,
-                [{"role": "system", "content": "Reply with JSON only."},
-                 {"role": "user",
-                  "content": 'Reply ONLY {"ok": true}. No other text.'}],
-                model=model, timeout=20)
-            data = LLM.parse_json_array_or_obj(txt)
-            ok = bool(data.get("ok")) if isinstance(data, dict) else False
-            return jsonify({"ok": ok, "provider": provider,
-                            "model": model, "configured": True,
-                            "message": "connection OK" if ok
-                            else "unexpected reply"})
-        except Exception as e:
-            return jsonify({"ok": False, "provider": provider,
-                            "model": model, "configured": True,
-                            "error": LLM._safe_error(e)}), 200
+        model = body.get("model")
+        result = LLM.test_connection(provider, model=model)
+        attempts = result.get("attempts") or []
+        ok = bool(result.get("success"))
+        payload = {
+            "ok": ok,
+            "mode": result.get("mode"),
+            "provider": result.get("provider"),
+            "fallback_chain": result.get("fallback_chain") or [],
+            "attempts": [
+                {k: v for k, v in a.items()
+                 if k not in ("configured",)} for a in attempts],
+            "duration_ms": sum(int(a.get("duration_ms") or 0)
+                               for a in attempts),
+        }
+        if not ok:
+            for a in attempts:
+                if not a.get("success") and a.get("error"):
+                    if a.get("configured") is False:
+                        payload["error"] = a["error"]
+                        payload["configured"] = False
+                        payload["model"] = a.get("model")
+                    break
+            payload.setdefault("error", "all configured providers failed")
+        else:
+            payload["message"] = ("connection OK (offline)" if
+                                  result.get("provider") == "heuristic"
+                                  else "connection OK")
+        return jsonify(payload), 200
 
     @app.get("/api/bookmarks")
     @login_required
@@ -842,7 +874,7 @@ def create_app():
         ids = [str(t) for t in (body.get("ids") or [])][:200]
         engine = engine_for(body)
         gate = ensure_cloud_opt_in(engine, body)
-        eff = "heuristic" if gate else engine
+        eff = "heuristic" if gate else classify_engine_for(body)
         res = CLS.classify_subset(kb(), ids, engine=eff,
                                   model=body.get("model"))
         if gate:
@@ -857,7 +889,7 @@ def create_app():
         body = _body()
         engine = engine_for(body)
         gate = ensure_cloud_opt_in(engine, body)
-        eff = "heuristic" if gate else engine
+        eff = "heuristic" if gate else classify_engine_for(body)
         if eff == "ai" and not LEGACY_AI.status().get("available") \
                 and not LLM.configured_provider_status().get(
                     "gemini", {}).get("configured"):
@@ -956,14 +988,16 @@ def create_app():
         engine = str((body or {}).get("engine")
                      or prev.get("engine_requested")
                      or prev.get("provider_requested")
-                     or LLM.provider_default() or "gemini").lower()
+                     or LLM.provider_default() or "auto").lower()
         if engine in ("heuristic", "ai"):
             # Retry means a hosted attempt; explicit heuristic has its own
-            # endpoint. Map legacy "ai" -> default hosted.
+            # endpoint. Map legacy "ai"/"heuristic" -> configured default.
+            engine = LLM.provider_default()
+            if engine == "heuristic":
+                engine = LLM.primary_hosted_provider() or "gemini"
+        if engine not in ("auto", "gemini", "groq", "openrouter"):
             engine = LLM.provider_default() if LLM.provider_default() \
-                != "heuristic" else "gemini"
-        if engine not in ("gemini", "groq", "openrouter"):
-            engine = "gemini"
+                in ("auto", "gemini", "groq", "openrouter") else "gemini"
         gate = ensure_cloud_opt_in(engine, body)
         if gate:
             return gate

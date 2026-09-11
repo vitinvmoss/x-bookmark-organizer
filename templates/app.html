@@ -157,15 +157,17 @@ select.mini,input.mini{padding:2px 6px;font-size:12px;border-radius:8px}
       <a href="/upload" style="flex:1"><button class="primary" style="width:100%">📤 Upload bookmarks</button></a>
     </div>
     <div class="sep">AI provider (cloud = opt-in)</div>
-    <div class="dim" style="font-size:12px;margin:0 10px 6px">Cloud AI is <b>off by default</b>. Heuristic mode never uploads your bookmarks. Ticking “Use cloud AI” sends bookmark text to the selected hosted provider.</div>
+    <div class="dim" style="font-size:12px;margin:0 10px 6px">Cloud AI is <b>off by default</b>. <b>Auto</b> tries only the providers that have an API key, in fallback order, and reports which one succeeded. Heuristic mode never uploads your bookmarks. Ticking “Use cloud AI” sends bookmark text to the selected hosted provider.</div>
     <div class="row" style="margin:0 10px">
       <select id="ai-engine" class="mini" style="flex:1" title="AI provider">
-        <option value="heuristic">heuristic (offline, default)</option>
+        <option value="auto">auto (fallback chain)</option>
         <option value="gemini">gemini (Google, free Flash tier)</option>
         <option value="groq">groq</option>
         <option value="openrouter">openrouter</option>
+        <option value="heuristic">heuristic (offline)</option>
       </select>
     </div>
+    <div id="ai-chain" class="dim" style="font-size:11px;margin:2px 10px 0"></div>
     <label class="dim" style="font-size:12px;display:block;margin:4px 10px">
       <input type="checkbox" id="cloud-ok"> Use cloud AI (send bookmark text to provider)
     </label>
@@ -271,7 +273,7 @@ select.mini,input.mini{padding:2px 6px;font-size:12px;border-radius:8px}
     </table>
     <div class="dfoot">
       <button id="d-add">+ Create category</button>
-      <button id="d-retry" class="small" style="display:none" title="Rerun discovery from the saved collection with Gemini (no re-upload, no auto-accept)">↻ Retry with Gemini</button>
+      <button id="d-retry" class="small" style="display:none" title="Retry AI (previously Retry with Gemini): rerun discovery from the saved collection (no re-upload, no auto-accept)">↻ Retry AI</button>
       <button id="d-heuristic" class="small" style="display:none" title="Explicitly generate an offline heuristic proposal (never presented as AI)">Use heuristic fallback</button>
       <span class="spacer"></span>
       <span class="dim" id="d-note"></span>
@@ -441,11 +443,24 @@ async function refreshState(){
     : "AI: offline (heuristic)";
   $("#ai-chip").title = a.available ? "" : (a.hint || "");
   const stBox = $("#ai-status");
+  const chainBox = $("#ai-chain");
+  const llmMode = llm.mode || llm.default_provider || "auto";
+  const sel = document.querySelector("#ai-engine");
+  if(sel && !sel.dataset.touched && !sel.value){
+    sel.value = (llmMode === "auto" || ["gemini","groq","openrouter","heuristic"].indexOf(llmMode) >= 0)
+      ? llmMode : "auto";
+  }
+  const chainLabels = (llm.fallback_chain_labels || []).slice();
+  if(chainBox && !chainBox.dataset.touched){
+    chainBox.textContent = "fallback chain: " +
+      (chainLabels.length ? chainLabels.join(" → ") : "(none configured)");
+  }
   if(stBox && !stBox.dataset.touched){
-    const dp = llm.default_provider || "gemini";
     const flags = ["gemini","groq","openrouter"].map(p =>
-      `${p}:${(llm[p]||{}).configured ? "key✓" : "no key"}`).join(" · ");
-    stBox.textContent = `provider default: ${dp} · ${flags} · cloud OFF unless ticked`;
+      `${p}:${(llm[p]||{}).configured ? "configured" : "missing"}`).join(" · ");
+    stBox.textContent = `provider: ${llmMode} · ${flags}` +
+      (llm.heuristic_fallback_enabled ? " · heuristic final fallback ON" : "") +
+      " · cloud OFF unless ticked";
   }
   const fi = $("#f-intent");
   const cur = fi.value || S.intent;
@@ -812,6 +827,39 @@ function dDiag(p){
     `HTTP status: ${esc(String(status))} · retries: ${retries} · ` +
     `error: ${esc(err || "(none reported)")}`;
 }
+function dChainText(p){
+  const labels = p && p.fallback_chain_labels;
+  if(labels && labels.length) return labels.join(" → ");
+  const chain = (p && p.fallback_chain) || [];
+  if(chain.length) return chain.map(dTitle).join(" → ");
+  return "";
+}
+function dAttemptsHtml(p){
+  const attempts = (p && p.attempts) || [];
+  if(!attempts.length) return "";
+  const chain = dChainText(p) ||
+    attempts.map(a => dTitle(a.provider)).join(" → ");
+  let html = `<div class="dim" style="margin-top:4px">Fallback chain: ${esc(chain)}</div>`;
+  html += `<div class="dim" style="margin-top:2px">Attempts: `;
+  html += attempts.map(a => {
+    const name = dTitle(a.provider);
+    if(a.success) return `${esc(name)} — success`;
+    if(a.attempted === false)
+      return `${esc(name)} — not attempted`;
+    if(a.http_status) return `${esc(name)} — HTTP ${esc(String(a.http_status))}`;
+    if(a.error_kind === "invalid_output")
+      return `${esc(name)} — invalid output`;
+    if(a.error_kind === "not_configured")
+      return `${esc(name)} — not configured`;
+    if(a.error_kind === "model_unavailable")
+      return `${esc(name)} — model unavailable`;
+    if(/timed?\s*out|timeout/i.test(a.error_message_truncated || ""))
+      return `${esc(name)} — timeout`;
+    return `${esc(name)} — failed`;
+  }).join(" · ");
+  html += `</div>`;
+  return html;
+}
 function dRender(){
   const tb = $("#d-rows"); tb.innerHTML = "";
   const visible = D.rows.filter(r => !r._del);
@@ -884,18 +932,33 @@ function dStatusBadge(p, requested){
     }
     html = `<span class="badge lowconf">${label}</span> ` +
       `<span class="dim">${esc(p.ai_error || "provider error")}</span>` +
+      dAttemptsHtml(p) +
       `<div class="dim" style="margin-top:4px">${dDiag(p)}</div>` +
       `<div class="dim" style="margin-top:4px">These results are <b>not AI-generated</b>. ` +
-      `Nothing was auto-substituted. Retry with Gemini, or explicitly select ` +
-      `the offline heuristic fallback below.</div>`;
+      `Nothing was auto-substituted. Use “Retry AI”, or explicitly select ` +
+      `the offline heuristic fallback below. (Previously labeled “Retry with Gemini”.)</div>`;
     showRetry = true; showHeur = true;
   } else if(used === "gemini" || used === "groq" || used === "openrouter" || used === "ai"){
-    html = `<span class="badge high">✓ ${esc(dTitle(used))} succeeded</span> ` +
-      `<span class="dim">AI-generated proposal — review, edit, then Accept.</span>`;
+    const model = p.model_used || p.model_requested || "?";
+    const succ = dTitle(p.successful_provider || used);
+    const chain = dChainText(p) || succ;
+    html = `<span class="badge high">✓ AI discovery succeeded</span> ` +
+      `<span class="dim">Provider: ${esc(succ)} · Model: ${esc(model)} · ` +
+      `Fallback chain: ${esc(chain)} · Successful provider: ${esc(succ)} — ` +
+      `AI-generated proposal; review, edit, then Accept.</span>` +
+      dAttemptsHtml(p);
   } else if(used === "heuristic"){
+    const chain = dChainText(p);
     html = `<span class="badge med">heuristic fallback selected manually</span> ` +
       `<span class="dim">Offline proposal — <b>not AI-generated</b>, never sent anywhere. ` +
-      `Review, edit, then Accept.</span>`;
+      `Review, edit, then Accept.</span>` +
+      (p.heuristic_fallback_used
+        ? `<div class="dim" style="margin-top:4px">Auto chain used the ` +
+          `explicitly enabled final heuristic fallback` +
+          (chain ? ` (${esc(chain)})` : "") +
+          ` — <b>not AI-generated</b>.</div>`
+        : "") +
+      dAttemptsHtml(p);
   } else {
     html = `<span class="badge">${esc(used || "proposal")}</span>`;
   }
@@ -914,8 +977,12 @@ function dMetaText(p, requested){
   const err = dIsError(p) ? " · provider-error state (no AI proposal)" : "";
   const eng = p.provider_used && p.provider_used !== "none"
     ? p.provider_used : p.engine;
+  const chain = dChainText(p);
   return `collection: ${p.collection_size} bookmarks · requested: ` +
     `${requested || p.engine_requested || p.engine} · engine: ${eng}${err}` +
+    (chain ? ` · fallback chain: ${chain}` : "") +
+    (!dIsError(p) && p.successful_provider
+      ? ` · successful provider: ${p.successful_provider}` : "") +
     (p.stage_a_themes ? ` · stage A themes: ${p.stage_a_themes}` : "") +
     (p.accepted ? " · a previously accepted structure exists" : "") +
     `\nThese are LOCAL folders (not X folders). ✕ removes a proposal row before Accept.`;
@@ -938,9 +1005,15 @@ async function doDiscover(){
     const j = await post("/api/discover", {engine, cloud_ok: cloudOk()});
     dApply(j, engine);
     if(dIsError(j.proposal)){
-      discoverStatus("discovery failed — no proposal generated. Retry with Gemini or use the explicit heuristic fallback.");
+      const chain = dChainText(j.proposal);
+      discoverStatus("AI discovery failed" + (chain ? " (" + chain + ")" : "") +
+        " — no AI proposals were generated. Retry AI or use the explicit heuristic fallback.");
     } else {
-      discoverStatus(`proposal ready [${j.proposal.provider_used || j.proposal.engine}] — review, edit, ✕ to delete rows, then Accept`);
+      const prov = j.proposal.successful_provider || j.proposal.provider_used || j.proposal.engine;
+      const chain = dChainText(j.proposal);
+      discoverStatus(`AI discovery succeeded — provider: ${prov}` +
+        (chain ? ` · fallback chain: ${chain}` : "") +
+        ` · review, edit, ✕ to delete rows, then Accept`);
     }
     await refreshState();
   }catch(e){ toast("Discover: " + e.message); discoverStatus("failed: " + e.message); }
@@ -949,14 +1022,16 @@ async function doDiscover(){
 async function doRetryGemini(){
   if(D.busy) return;
   D.busy = true;
-  discoverStatus("Retrying with Gemini from the saved collection (no re-upload, no auto-accept)…");
+  const engine = aiEngine();
+  discoverStatus("Retrying AI (" + engine + ") from the saved collection (no re-upload, no auto-accept)…");
   try{
-    const j = await post("/api/discover/retry", {cloud_ok: cloudOk()});
-    dApply(j, "gemini");
+    const j = await post("/api/discover/retry", {cloud_ok: cloudOk(), engine});
+    dApply(j, engine);
     if(dIsError(j.proposal)){
       discoverStatus("retry failed — no proposal generated. Retry again or use the explicit heuristic fallback.");
     } else {
-      discoverStatus(`retry ready [${j.proposal.provider_used || j.proposal.engine}] — review, edit, then Accept (nothing auto-accepted)`);
+      const prov = j.proposal.successful_provider || j.proposal.provider_used || j.proposal.engine;
+      discoverStatus(`retry ready [${prov}] — review, edit, then Accept (nothing auto-accepted)`);
     }
     await refreshState();
   }catch(e){ toast("Retry: " + e.message); discoverStatus("retry failed: " + e.message); }
@@ -1032,14 +1107,32 @@ $("#btn-logout").onclick = async ()=>{
 };
 $("#btn-aitest").onclick = async ()=>{
   const box = $("#ai-status");
+  const sel = document.querySelector("#ai-engine");
+  if(sel) sel.dataset.touched = "1";
   box.dataset.touched = "1";
-  box.textContent = "testing " + aiEngine() + "…";
+  const mode = aiEngine();
+  box.textContent = "testing " + mode + "…";
   try{
-    const r = await post("/api/ai-test", {provider: aiEngine()});
-    box.textContent = r.ok ? `✓ ${r.provider} OK (${r.model})`
-      : `✗ ${r.provider}: ${r.error || "failed"} (model ${r.model || "?"})`;
+    const r = await post("/api/ai-test", {provider: mode});
+    const attempts = (r.attempts || []).map(a => {
+      const name = dTitle(a.provider);
+      if(a.configured === false) return `${name} — not configured`;
+      if(a.attempted === false) return `${name} — not attempted`;
+      if(a.success) return `${name} — OK`;
+      if(a.http_status) return `${name} — ${a.http_status}`;
+      return `${name} — ${a.error || "failed"}`;
+    }).join(" · ");
+    box.textContent = (r.ok ? `✓ ${r.provider || mode} OK` : `✗ ${mode} failed`) +
+      (attempts ? " · " + attempts : "") +
+      (r.error && !r.ok ? " · " + r.error : "");
   }catch(e){ box.textContent = "test failed: " + e.message; }
 };
+const _engineSel = document.querySelector("#ai-engine");
+if(_engineSel) _engineSel.addEventListener("change", ()=>{
+  _engineSel.dataset.touched = "1";
+  const chainBox = $("#ai-chain");
+  if(chainBox) chainBox.dataset.touched = "1";
+});
 restoreProposal();
 
 // ---------------- infinite scroll & boot ----------------

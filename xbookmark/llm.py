@@ -1,11 +1,23 @@
-"""Hosted LLM provider layer: gemini (default) / groq / openrouter / heuristic.
+"""Hosted LLM provider layer: gemini / groq / openrouter / heuristic.
+
+Providers are isolated behind a small adapter interface (see the
+``Provider`` classes near the bottom of this module) so callers such as
+``categories.py`` never need to know how an individual HTTP API works.
+The layer also owns the provider preference/fallback chain:
+
+  LLM_PROVIDER=auto|gemini|groq|openrouter|heuristic
+  LLM_FALLBACK_PROVIDERS=gemini,groq,openrouter
+  LLM_ALLOW_HEURISTIC_FALLBACK=false
+
+When mode is ``auto`` the configured hosted providers are tried in the
+deterministic ``LLM_FALLBACK_PROVIDERS`` order; a provider with no API key
+is never attempted; transient failures and invalid structured output move
+on to the next provider; the offline heuristic runs only when it is the
+explicitly enabled final fallback.
 
 All requests are server-side via stdlib urllib (never expose keys to the
 browser). Compact structured JSON prompts, batched, bounded timeouts, at
-most ONE controlled retry, no uncontrolled retries.
-
-Every run reports: provider_requested, model_requested, provider_used,
-mode, successful/failed/fallback batches, safe error messages, resumable.
+most ONE controlled retry per provider, no uncontrolled retries.
 
 Secrets are never logged; errors are sanitized.
 """
@@ -18,9 +30,21 @@ import urllib.request
 
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
-DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-20b:free"
 
 PROVIDERS = ("gemini", "groq", "openrouter", "heuristic")
+HOSTED_PROVIDERS = ("gemini", "groq", "openrouter")
+VALID_MODES = ("auto", "gemini", "groq", "openrouter", "heuristic")
+DEFAULT_FALLBACK_ORDER = ("gemini", "groq", "openrouter")
+
+KEY_ENV = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
+           "openrouter": "OPENROUTER_API_KEY"}
+MODEL_ENV = {"gemini": "GEMINI_MODEL", "groq": "GROQ_MODEL",
+             "openrouter": "OPENROUTER_MODEL"}
+DEFAULT_MODEL = {"gemini": DEFAULT_GEMINI_MODEL, "groq": DEFAULT_GROQ_MODEL,
+                 "openrouter": DEFAULT_OPENROUTER_MODEL}
+PROVIDER_LABELS = {"gemini": "Gemini", "groq": "Groq",
+                   "openrouter": "OpenRouter", "heuristic": "Heuristic"}
 
 # Retryable transient statuses: exactly one controlled retry, short bounded
 # backoff. Anything else (400/401/403/404) fails fast with an actionable
@@ -46,8 +70,20 @@ def llm_timeout():
 
 
 def provider_default():
-    p = (os.environ.get("LLM_PROVIDER") or "gemini").strip().lower()
-    return p if p in PROVIDERS else "gemini"
+    p = (os.environ.get("LLM_PROVIDER") or "auto").strip().lower()
+    if p == "ai":  # legacy alias -> hosted auto chain
+        return "auto"
+    return p if p in VALID_MODES else "auto"
+
+
+def normalize_mode(raw):
+    """Coerce an arbitrary engine/mode string to a supported mode."""
+    p = (raw or "").strip().lower()
+    if p == "ai":  # legacy alias
+        return "auto"
+    if p in VALID_MODES:
+        return p
+    return provider_default()
 
 
 def model_for(provider):
@@ -61,12 +97,60 @@ def model_for(provider):
     return ""
 
 
+def parse_fallback_order():
+    """LLM_FALLBACK_PROVIDERS as a deduped list of hosted providers.
+
+    Unknown/blank entries are dropped; when nothing usable is configured
+    the deterministic default order (gemini, groq, openrouter) applies.
+    """
+    raw = os.environ.get("LLM_FALLBACK_PROVIDERS")
+    if not raw or not str(raw).strip():
+        return list(DEFAULT_FALLBACK_ORDER)
+    out = []
+    for part in str(raw).split(","):
+        p = part.strip().lower()
+        if p in HOSTED_PROVIDERS and p not in out:
+            out.append(p)
+    return out or list(DEFAULT_FALLBACK_ORDER)
+
+
+def allow_heuristic_fallback():
+    v = (os.environ.get("LLM_ALLOW_HEURISTIC_FALLBACK") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def provider_is_configured(name):
+    env = KEY_ENV.get((name or "").lower())
+    return bool(env and os.environ.get(env))
+
+
+def configured_hosted_providers():
+    """Configured hosted providers in fallback order (no heuristic)."""
+    return [p for p in parse_fallback_order() if provider_is_configured(p)]
+
+
+def primary_hosted_provider():
+    chain = configured_hosted_providers()
+    return chain[0] if chain else ""
+
+
+def fallback_chain_labels(mode=None):
+    """Human-readable fallback chain for the UI (no secrets)."""
+    return [PROVIDER_LABELS.get(n, n) for n in resolve_chain_names(mode)]
+
+
 def configured_provider_status():
     """Safe config report: which providers have keys, no secrets."""
     prov = provider_default()
     return {
+        "mode": prov,
         "default_provider": prov,
-        "default_model": model_for(prov) if prov != "heuristic" else "",
+        "default_model": model_for(prov) if prov in HOSTED_PROVIDERS else "",
+        "fallback_order": parse_fallback_order(),
+        "fallback_chain": resolve_chain_names(prov)
+        if prov == "auto" else [prov],
+        "fallback_chain_labels": fallback_chain_labels(prov),
+        "heuristic_fallback_enabled": allow_heuristic_fallback(),
         "gemini": {"configured": bool(os.environ.get("GEMINI_API_KEY")),
                    "model": os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL},
         "groq": {"configured": bool(os.environ.get("GROQ_API_KEY")),
@@ -123,9 +207,12 @@ def _read_http_body(exc, limit=500):
     return txt[:limit]
 
 
-def _safe_error(exc):
+def _safe_error(exc, provider="gemini"):
     """Map provider failures to safe, user-facing messages (no keys)."""
     import re as _re
+    model_env = MODEL_ENV.get((provider or "gemini").lower(), "GEMINI_MODEL")
+    default_model = DEFAULT_MODEL.get(
+        (provider or "gemini").lower(), DEFAULT_GEMINI_MODEL)
     if isinstance(exc, urllib.error.HTTPError):
         code = exc.code
         body = _read_http_body(exc)
@@ -136,9 +223,9 @@ def _safe_error(exc):
                 "not found" in low or "not_found" in low
                 or "unknown model" in low or "invalid model" in low
                 or "model_not_found" in low or "unsupported model" in low):
-            base = ("model unavailable (HTTP %d). Check GEMINI_MODEL "
-                    "(current default 'gemini-3.8-flash') and the "
-                    "provider dashboard" % code)
+            base = ("model unavailable (HTTP %d). Check %s "
+                    "(current default '%s') and the "
+                    "provider dashboard" % (code, model_env, default_model))
             if body:
                 return "%s: %s" % (base, body[:200])
             return base
@@ -152,7 +239,7 @@ def _safe_error(exc):
             base = "rate limited / quota exhausted (HTTP 429)"
         elif code == 404:
             base = ("model or endpoint not found (HTTP 404). Check "
-                    "GEMINI_MODEL (default 'gemini-3.8-flash')")
+                    "%s (default '%s')" % (model_env, default_model))
         elif 500 <= code <= 599:
             base = "provider server error (HTTP %d)" % code
         else:
@@ -201,7 +288,7 @@ def describe_error(provider, model, exc, retries):
         if not err_text:
             # fall back to the mapped safe message (already redacted)
             try:
-                err_text = _safe_error(exc)[:500]
+                err_text = _safe_error(exc, provider)[:500]
             except Exception:
                 err_text = "provider HTTP error %s" % (status,)
     else:
@@ -348,35 +435,125 @@ def _gemini_call(prompt_text, model, timeout):
     raise last
 
 
-def _openai_compat_call(base, key, model, messages, timeout):
+def _mentions_response_format(exc, limit=500):
+    """True when a provider 400 is specifically about JSON response_format.
+
+    Used to downgrade one step (structured JSON -> plain JSON instruction)
+    for models that do not support ``response_format``; this is a
+    capability adjustment, not an uncontrolled retry.
+    """
+    try:
+        body = _read_http_body(exc, limit=limit).lower()
+    except Exception:
+        body = ""
+    return ("response_format" in body or "json_object" in body
+            or "json mode" in body or "structured output" in body)
+
+
+def _openai_compat_call(base, key, model, messages, timeout,
+                        provider="openai", extra_headers=None,
+                        json_mode=True):
+    """OpenAI-compatible chat completions (Groq / OpenRouter).
+
+    Requests structured JSON via ``response_format`` when supported. If
+    the selected model rejects that field (400 naming response_format /
+    json_object), it is dropped once and the plain prompt instruction is
+    used — never an unbounded retry loop. One controlled retry for
+    transient 429/500/502/503/504/timeouts.
+    """
     if not key:
         raise RuntimeError("API key not configured")
     payload = {"model": model, "messages": messages, "temperature": 0.2,
                "max_tokens": 4000}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     headers = {"Content-Type": "application/json",
                "Authorization": "Bearer " + key}
+    for k, v in (extra_headers or {}).items():
+        if v:
+            headers[k] = v
     last = None
-    for _attempt in range(2):
+    retries = 0
+    response_format_supported = bool(json_mode)
+    for _attempt in range(2):  # 1 initial + 1 controlled retry max
         try:
-            data = _post_json(base.rstrip("/") + "/chat/completions",
-                              payload, headers, timeout)
             try:
-                return data["choices"][0]["message"]["content"]
+                data = _post_json(base.rstrip("/") + "/chat/completions",
+                                  payload, headers, timeout)
+            except ValueError as ve:
+                raise ValueError(
+                    "provider returned malformed JSON (%s)"
+                    % _redact_secrets(str(ve))[:120])
+            try:
+                text = data["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError, AttributeError):
-                raise ValueError("provider returned malformed JSON (bad chat envelope)")
+                raise ValueError(
+                    "provider returned malformed JSON (bad chat envelope)")
+            if not str(text or "").strip():
+                raise ValueError(
+                    "provider returned malformed JSON (empty chat content)")
+            try:
+                LAST_DIAGNOSTICS.clear()
+                LAST_DIAGNOSTICS.update(
+                    {"provider": provider, "model": model,
+                     "http_status": 200, "error": "", "retries": retries})
+            except Exception:
+                pass
+            return text
         except urllib.error.HTTPError as e:
+            # Capability downgrade: model cannot do response_format.
+            if (response_format_supported and e.code == 400
+                    and _mentions_response_format(e)):
+                response_format_supported = False
+                payload.pop("response_format", None)
+                retries = 1
+                continue
             if e.code in RETRYABLE_STATUS and _attempt == 0:
                 last = e
+                retries = 1
                 time.sleep(RETRY_BACKOFF_S)
                 continue
+            try:
+                describe_error(provider, model, e, retries)
+            except Exception:
+                pass
+            try:
+                e._llm_retries = retries  # type: ignore[attr-defined]
+            except Exception:
+                pass
             raise
         except (TimeoutError, OSError) as e:
             if _attempt == 0:
                 last = e
+                retries = 1
                 time.sleep(RETRY_BACKOFF_S)
                 continue
+            try:
+                describe_error(provider, model, e, retries)
+            except Exception:
+                pass
+            try:
+                e._llm_retries = retries  # type: ignore[attr-defined]
+            except Exception:
+                pass
             raise
+    try:
+        describe_error(provider, model, last, retries)
+    except Exception:
+        pass
     raise last
+
+
+def _openrouter_headers():
+    """OpenRouter attribution headers from env (never secrets)."""
+    extra = {}
+    site = (os.environ.get("OPENROUTER_SITE_URL") or "").strip()
+    app_name = (os.environ.get("OPENROUTER_APP_NAME") or "").strip()
+    if site:
+        extra["HTTP-Referer"] = site
+    if app_name:
+        extra["X-Title"] = app_name
+    return extra
 
 
 def chat_text(provider, messages, model=None, timeout=None):
@@ -393,11 +570,14 @@ def chat_text(provider, messages, model=None, timeout=None):
     if provider == "groq":
         return _openai_compat_call("https://api.groq.com/openai/v1",
                                    os.environ.get("GROQ_API_KEY") or "",
-                                   model or model_for("groq"), messages, timeout)
+                                   model or model_for("groq"), messages, timeout,
+                                   provider="groq")
     if provider == "openrouter":
         return _openai_compat_call("https://openrouter.ai/api/v1",
                                    os.environ.get("OPENROUTER_API_KEY") or "",
-                                   model or model_for("openrouter"), messages, timeout)
+                                   model or model_for("openrouter"), messages,
+                                   timeout, provider="openrouter",
+                                   extra_headers=_openrouter_headers())
     raise RuntimeError("unknown provider: %s" % provider)
 
 
@@ -460,10 +640,20 @@ def discover_prompt(context_text):
 
 
 def resolve_run_provider(requested):
-    """Return (primary, secondary_or_None). Secondary only when its key set."""
+    """Return (primary, secondary_or_None).
+
+    Kept for the legacy classification path. Explicit providers get an
+    optional second hosted provider only when its key is configured;
+    ``auto`` resolves to the first configured hosted provider in the
+    fallback order.
+    """
     requested = (requested or provider_default()).lower()
     if requested == "ai":  # legacy alias → default hosted
-        requested = "gemini" if provider_default() == "gemini" else provider_default()
+        requested = provider_default()
+    if requested == "auto":
+        hosted = [c for c in resolve_chain_names("auto")
+                  if c in HOSTED_PROVIDERS]
+        requested = hosted[0] if hosted else "heuristic"
     if requested not in ("gemini", "groq", "openrouter", "heuristic"):
         requested = "gemini"
     if requested == "heuristic":
@@ -476,3 +666,230 @@ def resolve_run_provider(requested):
             secondary = cand
             break
     return requested, secondary
+
+
+# ===================================================================== #
+# Provider adapter interface.                                            #
+#                                                                        #
+# Each adapter owns its provider's configuration facts and the one      #
+# call primitive the discovery layer needs (structured JSON).           #
+# categories.py never constructs URLs, headers, or provider payloads.    #
+# ===================================================================== #
+
+class ProviderError(RuntimeError):
+    """Safe provider failure carrying no secrets."""
+
+    def __init__(self, message, provider=None, model=None,
+                 kind="fallback_transient", http_status=None):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.kind = kind
+        self.http_status = http_status
+
+
+class Provider:
+    name = ""
+    key_env = ""
+    model_env = ""
+    default_model = ""
+
+    def __init__(self, model=None, timeout=None):
+        self.model = model or model_for(self.name)
+        self.timeout = timeout or llm_timeout()
+
+    def is_configured(self):
+        if not self.key_env:
+            return True
+        return bool(os.environ.get(self.key_env))
+
+    def configured_model(self):
+        return model_for(self.name)
+
+    def generate_text(self, messages, model=None, timeout=None):
+        return chat_text(self.name, messages, model=model or self.model,
+                         timeout=timeout or self.timeout)
+
+    def generate_structured_json(self, messages, model=None, timeout=None):
+        return chat_json(self.name, messages, model=model or self.model,
+                         timeout=timeout or self.timeout)
+
+    def describe_error(self, exc, retries=0):
+        return describe_error(self.name, self.model, exc, retries)
+
+    def safe_error(self, exc):
+        return _safe_error(exc, self.name)
+
+
+class GeminiProvider(Provider):
+    name = "gemini"
+    key_env = "GEMINI_API_KEY"
+    model_env = "GEMINI_MODEL"
+    default_model = DEFAULT_GEMINI_MODEL
+
+
+class GroqProvider(Provider):
+    name = "groq"
+    key_env = "GROQ_API_KEY"
+    model_env = "GROQ_MODEL"
+    default_model = DEFAULT_GROQ_MODEL
+
+
+class OpenRouterProvider(Provider):
+    name = "openrouter"
+    key_env = "OPENROUTER_API_KEY"
+    model_env = "OPENROUTER_MODEL"
+    default_model = DEFAULT_OPENROUTER_MODEL
+
+
+class HeuristicProvider(Provider):
+    name = "heuristic"
+    key_env = ""
+    default_model = ""
+
+    def is_configured(self):
+        return True
+
+    def generate_structured_json(self, messages, model=None, timeout=None):
+        raise ProviderError(
+            "heuristic provider is offline (no hosted model)",
+            provider=self.name, kind="not_supported")
+
+
+_PROVIDER_CLASSES = {
+    "gemini": GeminiProvider,
+    "groq": GroqProvider,
+    "openrouter": OpenRouterProvider,
+    "heuristic": HeuristicProvider,
+}
+
+
+def get_provider(name, model=None, timeout=None):
+    """Factory for a provider adapter by name."""
+    cls = _PROVIDER_CLASSES.get((name or "").lower())
+    if cls is None:
+        raise ValueError("unknown provider: %s" % (name,))
+    return cls(model=model, timeout=timeout)
+
+
+def resolve_chain(mode=None, model=None, timeout=None):
+    """Ordered provider adapters to attempt for a run.
+
+    - explicit gemini/groq/openrouter -> exactly that provider (no
+      cross-provider fallback; callers asked for it by name)
+    - heuristic -> the offline provider only
+    - auto -> configured hosted providers in LLM_FALLBACK_PROVIDERS
+      order, then heuristic ONLY when LLM_ALLOW_HEURISTIC_FALLBACK is
+      explicitly enabled. Providers without a key are never included.
+    """
+    m = normalize_mode(mode)
+    if m == "heuristic":
+        return [get_provider("heuristic", timeout=timeout)]
+    if m in HOSTED_PROVIDERS:
+        return [get_provider(m, model=model, timeout=timeout)]
+    chain = []
+    for p in parse_fallback_order():
+        if provider_is_configured(p):
+            chain.append(get_provider(p, model=None, timeout=timeout))
+    if allow_heuristic_fallback():
+        chain.append(get_provider("heuristic", timeout=timeout))
+    return chain
+
+
+def resolve_chain_names(mode=None):
+    return [p.name for p in resolve_chain(mode)]
+
+
+# ===================================================================== #
+# Small, safe connection test (never sends the bookmark collection).     #
+# ===================================================================== #
+
+CONNECTION_TEST_MESSAGES = [
+    {"role": "system",
+     "content": "You are a connectivity test. Reply with JSON only."},
+    {"role": "user", "content": 'Reply ONLY {"ok": true}. No other text.'},
+]
+
+
+def test_provider_connection(provider_name, model=None, timeout=None):
+    """Test one provider with a tiny harmless prompt. Safe dict only."""
+    prov = get_provider(provider_name, model=model, timeout=timeout)
+    label = PROVIDER_LABELS.get(prov.name, prov.name)
+    base = {"provider": prov.name, "provider_label": label,
+            "model": model or prov.configured_model() or prov.model}
+    if not prov.is_configured():
+        base.update({"success": False, "configured": False,
+                     "http_status": None,
+                     "error": "%s is not configured. Add the %s API key."
+                     % (label, label)})
+        return base
+    if prov.name == "heuristic":
+        base.update({"success": True, "configured": True,
+                     "http_status": None, "error": "",
+                     "duration_ms": 0, "offline": True})
+        return base
+    t0 = time.time()
+    try:
+        txt = prov.generate_text(
+            CONNECTION_TEST_MESSAGES, timeout=min(timeout or 20, 20))
+        data = parse_json_array_or_obj(txt)
+        ok = bool(data.get("ok")) if isinstance(data, dict) else False
+        base.update({"success": ok, "configured": True, "http_status": 200,
+                     "error": "" if ok else "unexpected reply",
+                     "duration_ms": int((time.time() - t0) * 1000)})
+        return base
+    except Exception as e:
+        status = getattr(e, "code", None) if isinstance(
+            e, urllib.error.HTTPError) else None
+        base.update({"success": False, "configured": True,
+                     "http_status": status,
+                     "error": _safe_error(e, prov.name),
+                     "duration_ms": int((time.time() - t0) * 1000)})
+        return base
+
+
+def test_connection(mode=None, model=None):
+    """Test the selected mode's chain in order with a tiny prompt.
+
+    Auto mode reports each attempted provider and stops at the first
+    success, e.g. Gemini -> 503, Groq -> OK, OpenRouter -> not attempted.
+    """
+    m = normalize_mode(mode)
+    result = {"mode": m, "fallback_chain": fallback_chain_labels(m),
+              "attempts": [], "success": False, "provider": None}
+    if m == "heuristic":
+        r = test_provider_connection("heuristic")
+        result["attempts"] = [r]
+        result["success"] = True
+        result["provider"] = "heuristic"
+        return result
+    chain = resolve_chain(m, model=model)
+
+    def _not_attempted(p):
+        label = PROVIDER_LABELS.get(p.name, p.name)
+        return {"provider": p.name, "provider_label": label,
+                "model": p.configured_model() or p.model,
+                "configured": p.is_configured(), "success": False,
+                "attempted": False, "http_status": None, "error": "",
+                "duration_ms": 0,
+                "skipped_reason": "not attempted (earlier provider "
+                                  "succeeded)"}
+
+    for idx, prov in enumerate(chain):
+        if prov.name == "heuristic":
+            r = test_provider_connection("heuristic")
+            r["attempted"] = True
+            result["attempts"].append(r)
+            result["success"] = True
+            result["provider"] = "heuristic"
+            break
+        r = test_provider_connection(prov.name, model=model, timeout=20)
+        r["attempted"] = True
+        result["attempts"].append(r)
+        if r.get("success"):
+            result["success"] = True
+            result["provider"] = prov.name
+            for later in chain[idx + 1:]:
+                result["attempts"].append(_not_attempted(later))
+            break
+    return result

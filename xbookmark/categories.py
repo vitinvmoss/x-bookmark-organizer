@@ -12,6 +12,7 @@ No X calls, no X writes. Every change is logged to change_log.jsonl.
 """
 from __future__ import annotations
 import threading
+import time
 
 from . import ai as AI
 from . import clusters as CL
@@ -876,6 +877,19 @@ def _stage_b_context(themes, books, signals, min_categories,
     return "\n".join(lines)
 
 
+def _provider_generate_json(provider, messages, model=None):
+    """Ask the llm provider layer for structured JSON.
+
+    ``provider`` is a provider adapter (preferred) or a provider name;
+    categories.py never knows how a provider performs its HTTP call.
+    """
+    gen = getattr(provider, "generate_structured_json", None)
+    if callable(gen):
+        return gen(messages, model=model)
+    from . import llm as _LLM
+    return _LLM.chat_json(provider, messages, model=model)
+
+
 def _run_two_stage(provider, model, clusters, signals, books, user_tags,
                    min_categories, max_categories):
     """Run Stage A (themes) then Stage B (proposals). Returns
@@ -883,10 +897,9 @@ def _run_two_stage(provider, model, clusters, signals, books, user_tags,
     structured output' message when either stage is unusable, or
     propagates the provider exception (after its one controlled retry
     inside llm.py) so the caller reports a provider-error state."""
-    from . import llm as _LLM
     a_context = _stage_a_context(clusters, signals, books, user_tags,
                                  min_categories, max_categories)
-    a_data = _LLM.chat_json(
+    a_data = _provider_generate_json(
         provider,
         [{"role": "system", "content": STAGE_A_SYSTEM},
          {"role": "user", "content": a_context}],
@@ -898,7 +911,7 @@ def _run_two_stage(provider, model, clusters, signals, books, user_tags,
                          "(stage A: no usable themes with real evidence)")
     b_context = _stage_b_context(themes, books, signals, min_categories,
                                  max_categories)
-    b_data = _LLM.chat_json(
+    b_data = _provider_generate_json(
         provider,
         [{"role": "system", "content": STAGE_B_SYSTEM},
          {"role": "user", "content": b_context}],
@@ -919,9 +932,13 @@ def _classify_discovery_error(engine, exc, model_name=""):
     provider/model/status/text<=500 plus retry count.
     """
     from . import llm as _LLM
-    prov = engine if engine in ("gemini", "groq", "openrouter") else "gemini"
-    if engine == "ai":
-        prov = "ai"
+    prov = (engine or "gemini").lower()
+    if prov not in ("gemini", "groq", "openrouter", "heuristic", "ai",
+                    "auto"):
+        prov = "gemini"
+    label = _LLM.PROVIDER_LABELS.get(prov, "AI")
+    key_env = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
+               "openrouter": "OPENROUTER_API_KEY"}.get(prov, "an API key")
     retries = int(getattr(exc, "_llm_retries", 0) or 0)
     # Retry counts recorded inside llm._gemini_call live in LAST_DIAGNOSTICS
     try:
@@ -935,14 +952,11 @@ def _classify_discovery_error(engine, exc, model_name=""):
                 "http_status": None, "error": _LLM._redact_secrets(msg)[:500],
                 "retries": retries}
         return ("%s not configured; configure %s to use cloud AI"
-                % (prov, {"gemini": "GEMINI_API_KEY",
-                          "groq": "GROQ_API_KEY",
-                          "openrouter": "OPENROUTER_API_KEY"}.get(prov, "key")),
-                "not_configured", diag)
+                % (prov, key_env), "not_configured", diag)
     try:
         if _LLM.is_model_unavailable(exc):
             diag = _LLM.describe_error(prov, model_name, exc, retries)
-            return (_LLM._safe_error(exc), "model_unavailable", diag)
+            return (_LLM._safe_error(exc, prov), "model_unavailable", diag)
     except Exception:
         pass
     if "malformed json" in msg.lower() or "invalid structured" in msg.lower() \
@@ -958,10 +972,10 @@ def _classify_discovery_error(engine, exc, model_name=""):
         safe = msg if ("malformed" in msg.lower()
                        or "strictly valid" in msg.lower()) else \
             "provider returned invalid structured output"
-        return ("Gemini returned invalid structured output (%s)"
-                % safe[:300], "invalid_output", diag)
+        return ("%s returned invalid structured output (%s)"
+                % (label, safe[:300]), "invalid_output", diag)
     try:
-        safe = _LLM._safe_error(exc)
+        safe = _LLM._safe_error(exc, prov)
     except Exception:
         safe = "%s" % str(exc)[:200]
     try:
@@ -971,6 +985,93 @@ def _classify_discovery_error(engine, exc, model_name=""):
                 "http_status": getattr(exc, "code", None),
                 "error": safe[:500], "retries": retries}
     return (safe, "fallback_transient", diag)
+
+
+def _attempt_record(provider, model, diag, kind, success, started):
+    """Safe per-attempt diagnostics (never prompts/contents/headers/keys).
+
+    Retains only the contract fields the UI/diagnostics need:
+    provider, model, http_status, error_kind, error_message_truncated,
+    retry_count, duration_ms, success.
+    """
+    diag = diag or {}
+    return {
+        "provider": str(provider or ""),
+        "model": str(model or ""),
+        "http_status": diag.get("http_status"),
+        "error_kind": str(kind or ""),
+        "error_message_truncated": str(diag.get("error") or "")[:500],
+        "retry_count": int(diag.get("retries") or 0),
+        "duration_ms": int(max(0.0, time.time() - started) * 1000),
+        "success": bool(success),
+    }
+
+
+def _aggregate_chain_failure(attempts, chain, last_error, last_kind, last_diag):
+    """Compose the explicit provider-error state for a failed chain.
+
+    Returns (ai_error, error_kind, diagnostics). ``diagnostics`` keeps a
+    legacy {provider,model,http_status,error,retries} shape pointing at
+    the first failed provider so existing consumers keep working.
+    """
+    from . import llm as _LLM
+    lines = []
+    for a in attempts or []:
+        label = _LLM.PROVIDER_LABELS.get(a.get("provider"),
+                                         a.get("provider") or "AI")
+        status = a.get("http_status")
+        kind = a.get("error_kind") or ""
+        if a.get("success"):
+            desc = "success"
+        elif status:
+            desc = "HTTP %s" % status
+        elif kind == "invalid_output":
+            desc = "invalid structured output"
+        elif kind == "model_unavailable":
+            desc = "model unavailable"
+        elif kind == "not_configured":
+            desc = "not configured"
+        elif a.get("error_message_truncated"):
+            desc = "error"
+        else:
+            desc = "failed"
+        lines.append("%s - %s" % (label, desc))
+    if not attempts:
+        ai_error = ("no AI provider is configured; set an API key "
+                    "(GEMINI_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY) "
+                    "or choose the offline heuristic explicitly")
+        return (ai_error, "not_configured",
+                {"provider": "none", "model": "", "http_status": None,
+                 "error": ai_error[:500], "retries": 0})
+    attempted = ", ".join(lines)
+    ai_error = ("AI discovery failed after trying: %s. No AI proposals "
+                "were generated." % attempted)
+    detail = str(last_error or "").strip()
+    if detail:
+        ai_error += " Last error: %s" % detail[:300]
+    # error_kind: prefer the most actionable terminal category.
+    kinds = [a.get("error_kind") for a in attempts if a.get("error_kind")]
+    if kinds and all(k == "not_configured" for k in kinds):
+        error_kind = "not_configured"
+    elif "invalid_output" in kinds and last_kind == "invalid_output":
+        error_kind = "invalid_output"
+    elif last_kind:
+        error_kind = last_kind
+    elif "invalid_output" in kinds:
+        error_kind = "invalid_output"
+    else:
+        error_kind = "fallback_transient"
+    base = dict(last_diag or {})
+    first = attempts[0]
+    diag = {"provider": first.get("provider"),
+            "model": first.get("model") or "",
+            "http_status": first.get("http_status"),
+            "error": (first.get("error_message_truncated")
+                      or last_error or "")[:500],
+            "retries": first.get("retry_count", 0)}
+    if not diag["error"] and base:
+        diag["error"] = str(base.get("error") or "")[:500]
+    return (ai_error, error_kind, diag)
 
 
 def discover_structure(kb, engine="ai", model=None, min_categories=8,
@@ -1039,7 +1140,10 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
         status_label = "heuristic"
         rejected = []
         stage_info = {}
-        hosted = {"ai", "gemini", "groq", "openrouter"}
+        attempts = []
+        fallback_chain = []
+        successful_provider = ""
+        hosted = {"ai", "gemini", "groq", "openrouter", "auto"}
 
         def _success_diag(prov, mdl):
             try:
@@ -1073,11 +1177,12 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                        len(valid) + len(rej), why[:300]))
 
         if engine in hosted:
-            try:
-                from . import llm as _LLM
-                if engine == "ai":
-                    # legacy path (OpenCode/Ollama bridge) — kept for
-                    # backwards compatibility with existing flows/tests.
+            from . import llm as _LLM0
+            if engine == "ai":
+                # legacy path (OpenCode/Ollama bridge) — kept for
+                # backwards compatibility with existing flows/tests.
+                fallback_chain = ["ai"]
+                try:
                     data = AI.chat_json(
                         [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": _structure_context(
@@ -1092,47 +1197,112 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                         raise ValueError(
                             "provider returned invalid structured output "
                             "(empty categories)")
-                else:
-                    _prov = engine
-                    _model = model or _LLM.model_for(_prov)
-                    raw, stage_info = _run_two_stage(
-                        _prov, _model, clusters, signals, books,
-                        user_tags, min_categories, max_categories)
-                valid, rejected = _strict_validate(
-                    raw, books, total, max_categories)
-                _check_valid(valid, rejected, "validation")
-                cats = valid
-                used = _prov
-                error_kind = "succeeded"
-                ai_error = ""
-                diagnostics = _success_diag(_prov, _model)
-                status_label = _prov
-            except Exception as e:
-                try:
-                    from . import llm as _LLM2
-                    _m = model or _LLM2.model_for(engine) \
-                        if engine != "ai" else (model or "")
-                except Exception:
+                    valid, rejected = _strict_validate(
+                        raw, books, total, max_categories)
+                    _check_valid(valid, rejected, "validation")
+                    cats = valid
+                    used = "ai"
+                    error_kind = "succeeded"
+                    ai_error = ""
+                    diagnostics = {"provider": "ai", "model": _model,
+                                   "http_status": None, "error": "",
+                                   "retries": 0}
+                    status_label = "ai"
+                    successful_provider = "ai"
+                    attempts.append(_attempt_record(
+                        "ai", _model, diagnostics, "succeeded", True,
+                        time.time()))
+                except Exception as e:
                     _m = model or ""
-                ai_error, error_kind, diagnostics = _fail(e, engine, _m)
-                # Safe single-line log: diagnostics only, never prompts,
-                # contents, headers, or secrets. No silent fallback: the
-                # caller gets an explicit provider-error state.
-                try:
+                    ai_error, error_kind, diagnostics = _fail(e, "ai", _m)
+                    attempts.append(_attempt_record(
+                        "ai", _m, diagnostics, error_kind, False, time.time()))
                     print("AI discovery failed "
-                          "(provider=%s model=%s status=%s retries=%s: %s); "
+                          "(provider=ai model=%s status=%s retries=%s: %s); "
                           "no proposals generated."
-                          % (diagnostics.get("provider"),
-                             diagnostics.get("model"),
+                          % (diagnostics.get("model"),
                              diagnostics.get("http_status"),
                              diagnostics.get("retries"),
                              (ai_error or "")[:200]))
-                except Exception:
-                    print("AI discovery failed; no proposals generated.")
-                cats = None
+                    cats = None
+            else:
+                # Explicit provider (gemini/groq/openrouter) -> exactly
+                # that provider. auto -> configured providers in
+                # LLM_FALLBACK_PROVIDERS order, then heuristic only when
+                # LLM_ALLOW_HEURISTIC_FALLBACK is enabled.
+                chain = _LLM0.resolve_chain(engine, model=model)
+                fallback_chain = [p.name for p in chain]
+                last_error = ""
+                last_kind = "fallback_transient"
+                last_diag = None
+                if not chain:
+                    ai_error = ("no AI provider is configured for auto "
+                                "mode; set an API key or choose the offline "
+                                "heuristic explicitly")
+                    error_kind = "not_configured"
+                    diagnostics = {"provider": "none", "model": "",
+                                   "http_status": None,
+                                   "error": ai_error[:500], "retries": 0}
+                    cats = None
+                for adapter in chain:
+                    prov = adapter.name
+                    if prov == "heuristic":
+                        mdl = ""
+                    elif engine in _LLM0.HOSTED_PROVIDERS and model:
+                        mdl = model
+                    else:
+                        mdl = adapter.model
+                    started = time.time()
+                    try:
+                        if prov == "heuristic":
+                            raw = _structure_heuristic(
+                                clusters, signals, min_categories,
+                                max_categories, books)
+                            this_stage = {}
+                        else:
+                            raw, this_stage = _run_two_stage(
+                                adapter, mdl, clusters, signals, books,
+                                user_tags, min_categories, max_categories)
+                        valid, rejected = _strict_validate(
+                            raw, books, total, max_categories)
+                        _check_valid(valid, rejected, "validation")
+                    except Exception as e:
+                        ai_err, kind, diag = _classify_discovery_error(
+                            prov, e, mdl)
+                        attempts.append(_attempt_record(
+                            prov, mdl, diag, kind, False, started))
+                        last_error, last_kind, last_diag = ai_err, kind, diag
+                        continue
+                    # Success: this provider produced valid structured
+                    # output. Report exactly which one succeeded.
+                    cats = valid
+                    used = prov
+                    error_kind = "succeeded"
+                    ai_error = ""
+                    stage_info = this_stage or {}
+                    diagnostics = _success_diag(prov, mdl)
+                    status_label = prov
+                    successful_provider = prov
+                    attempts.append(_attempt_record(
+                        prov, mdl, diagnostics, "succeeded", True, started))
+                    break
+                if cats is None:
+                    ai_error, error_kind, diagnostics = \
+                        _aggregate_chain_failure(
+                            attempts, fallback_chain, last_error, last_kind,
+                            last_diag)
+                    try:
+                        print("AI discovery failed (chain=%s): no proposals "
+                              "generated. %s"
+                              % ("->".join(fallback_chain or ["none"]),
+                                 (ai_error or "")[:200]))
+                    except Exception:
+                        print("AI discovery failed; no proposals generated.")
         elif engine == "heuristic":
             # Explicit offline run only (never automatic, never labeled
             # as AI-generated).
+            fallback_chain = ["heuristic"]
+            _h_started = time.time()
             raw_core = _structure_heuristic(clusters, signals,
                                             min_categories, max_categories,
                                             books)
@@ -1151,15 +1321,22 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                                "http_status": None,
                                "error": ai_error[:500], "retries": 0}
                 status_label = "heuristic (insufficient signal)"
+                attempts.append(_attempt_record(
+                    "heuristic", "", diagnostics, "insufficient_signal",
+                    False, _h_started))
                 cats = None
             else:
                 cats = valid
                 used = "heuristic"
                 error_kind = "succeeded"
                 status_label = "heuristic"
+                successful_provider = "heuristic"
                 diagnostics = {"provider": "heuristic", "model": "",
                                "http_status": None, "error": "",
                                "retries": 0}
+                attempts.append(_attempt_record(
+                    "heuristic", "", diagnostics, "succeeded", True,
+                    _h_started))
         else:
             ai_error = "unknown discovery engine: %s" % (engine,)
             error_kind = "invalid_output"
@@ -1168,15 +1345,27 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                            "retries": 0}
             status_label = "error"
             cats = None
+        successful_model = ""
+        for _a in attempts:
+            if _a.get("success"):
+                successful_model = _a.get("model") or ""
+                break
         try:
             from . import llm as _LLM3
             _primary3, _ = _LLM3.resolve_run_provider(engine) \
                 if engine in ("ai", "gemini", "groq", "openrouter",
-                              "heuristic") else ("heuristic", None)
-            _model3 = model or (_LLM3.model_for(_primary3)
-                                if _primary3 != "heuristic" else "")
+                              "heuristic", "auto") else ("heuristic", None)
+            _model3 = successful_model or (
+                model or (_LLM3.model_for(_primary3)
+                          if _primary3 != "heuristic" else ""))
         except Exception:
-            _primary3, _model3 = engine, (model or "")
+            _primary3, _model3 = engine, (successful_model or model or "")
+        try:
+            from . import llm as _LLM4
+            _chain_labels = [_LLM4.PROVIDER_LABELS.get(n, n)
+                             for n in (fallback_chain or [])]
+        except Exception:
+            _chain_labels = list(fallback_chain or [])
         # "Unsorted / Review" is a computed bucket, not a proposal: only
         # include it when items genuinely went unclassified (never as a
         # zero-count placeholder).
@@ -1214,6 +1403,15 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                    "provider_actually_used": provider_used,
                    "mode": provider_used,
                    "fallback": is_fallback,
+                   "fallback_chain": list(fallback_chain or []),
+                   "fallback_chain_labels": _chain_labels,
+                   "attempts": attempts,
+                   "successful_provider": (successful_provider
+                                           if not failed else "none"),
+                   "model_used": successful_model,
+                   "heuristic_fallback_used": bool(
+                       not failed and successful_provider == "heuristic"
+                       and engine == "auto"),
                    "heuristic_available": bool(failed and engine in hosted),
                    "ai_error": ai_error,
                    "error_kind": "succeeded" if not failed else error_kind,
