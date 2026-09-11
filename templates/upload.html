@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Upload — X Bookmarks</title>
+<style>
+:root{--bg:#0f1419;--panel:#15202b;--panel2:#192734;--line:#253341;--text:#e7e9ea;--dim:#8b98a5;--accent:#1d9bf0;--good:#00ba7c;--warn:#ffd400;--bad:#f4212e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 "Segoe UI",system-ui,sans-serif}
+header{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;gap:10px;align-items:center;z-index:5}
+header a{color:var(--accent);text-decoration:none;font-size:15px}
+main{max-width:640px;margin:0 auto;padding:20px 16px 60px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+h1{font-size:19px;margin:0}
+.sub{color:var(--dim);font-size:13px;margin-top:2px}
+input[type=file]{width:100%;margin:12px 0;font-size:15px}
+button{font:inherit;cursor:pointer;border:0;border-radius:14px;padding:13px 18px;min-height:48px;background:var(--accent);color:#fff;font-size:16px;width:100%}
+button:disabled{opacity:.5}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+ol{padding-left:20px;margin:8px 0}
+li{margin:6px 0}
+.dim{color:var(--dim);font-size:13px}
+#result{margin-top:12px;font-size:15px}
+.ok{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+#spinner{display:none;color:var(--dim);margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:10px}
+td,th{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left}
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Library</a><b>Upload bookmarks</b><span style="flex:1"></span><span class="dim">{{ user }}</span>
+</header>
+<main>
+  <div class="card">
+    <h1>📤 Upload from your phone</h1>
+    <div class="sub">JSONL from the collector (recommended) · JSON · CSV up to {{ max_mb }} MB</div>
+    <form id="up" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input id="file" name="file" type="file" accept=".jsonl,.ndjson,.json,.csv" required>
+      <button id="btn" type="submit">Upload &amp; import</button>
+    </form>
+    <div id="spinner" role="status">Uploading… keep this tab open.</div>
+    <div id="result" aria-live="polite"></div>
+  </div>
+  <div class="card">
+    <h1>How to export bookmarks from X (desktop, one time)</h1>
+    <ol>
+      <li>On desktop Chrome/Edge, install Tampermonkey or Violentmonkey.</li>
+      <li>Add <code>assets/collector.user.js</code> from this repo as a new userscript.</li>
+      <li>Open <code>https://x.com/i/bookmarks</code>, scroll to the bottom until everything loads.</li>
+      <li>Click the <b>Download</b> button the script adds — it saves <code>bookmarks_raw.jsonl</code>.</li>
+      <li>Send that file to your phone (email / cloud drive / chat with yourself).</li>
+      <li>Open this site on your phone, log in, upload the file here.</li>
+      <li>Then: Discover Categories → Classify All → work through Needs Review → search &amp; export.</li>
+    </ol>
+    <div class="dim">This app never asks for your X login, password, or cookies. The first version does not log in to X directly.</div>
+  </div>
+  <div class="card">
+    <h1>Recent uploads</h1>
+    <div id="hist" class="dim">loading…</div>
+  </div>
+  <div class="card"><a href="/" style="color:var(--accent)">← Back to library</a></div>
+</main>
+<script>
+const CSRF = {{ csrf_token|tojson }};
+const $ = s => document.querySelector(s);
+const esc = t => (t||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function hist(){
+  try{
+    const r = await fetch("/api/uploads"); const j = await r.json();
+    if(!j.uploads || !j.uploads.length){ $("#hist").textContent = "no uploads yet."; return; }
+    $("#hist").innerHTML = "<table><tr><th>When</th><th>File</th><th>+</th><th>dup</th><th>bad</th></tr>" +
+      j.uploads.map(u => `<tr><td>${esc(u.at||"")}</td><td>${esc(u.filename||"")}</td><td>${u.imported}</td><td>${u.duplicates}</td><td>${u.invalid}</td></tr>`).join("") + "</table>";
+  }catch(e){ $("#hist").textContent = "could not load history."; }
+}
+hist();
+$("#up").addEventListener("submit", async e => {
+  e.preventDefault();
+  const f = $("#file").files[0];
+  if(!f) return;
+  $("#btn").disabled = true; $("#spinner").style.display = "block"; $("#result").textContent = "";
+  try{
+    const fd = new FormData(); fd.append("file", f); fd.append("csrf_token", CSRF);
+    const r = await fetch("/api/import", {method:"POST", headers:{"X-CSRF-Token": CSRF}, body: fd});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || r.statusText);
+    $("#result").innerHTML = `<span class="ok"><b>Done.</b> Imported ${j.imported}, duplicates ${j.duplicates}, invalid ${j.invalid}, total ${j.total}.</span> <a href="/" style="color:var(--accent)">Open library →</a>`;
+    hist();
+  }catch(err){ $("#result").innerHTML = `<span class="bad">Upload failed: ${esc(err.message)}</span>`; }
+  $("#btn").disabled = false; $("#spinner").style.display = "none";
+});
+</script>
+</body>
+</html>

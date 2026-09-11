@@ -1,0 +1,21 @@
+# Local run artifacts - do not commit
+data/
+__pycache__/
+*.pyc
+*.swap
+.tmp-*
+# secrets / private data (never commit)
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.sqlite*
+meta.db
+backups/
+uploads/
+exports/
+*.log
+unittest_out.txt
+data/**/exports/
+.DS_Store

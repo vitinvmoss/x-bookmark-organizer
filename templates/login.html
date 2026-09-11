@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Log in — X Bookmarks</title>
+<style>
+:root{--bg:#0f1419;--panel:#15202b;--line:#253341;--text:#e7e9ea;--dim:#8b98a5;--accent:#1d9bf0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px 24px;max-width:420px;width:100%}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+label{display:block;font-size:13px;color:var(--dim);margin:12px 0 4px}
+input{width:100%;font:inherit;font-size:17px;background:#192734;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+button{width:100%;margin-top:18px;font:inherit;font-size:17px;background:var(--accent);color:#fff;border:0;border-radius:14px;padding:13px;min-height:48px}
+.err{background:#331420;color:#ff7a9c;border-radius:12px;padding:10px 12px;font-size:14px;margin-bottom:8px}
+.note{color:var(--dim);font-size:12px;margin-top:14px}
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>📚 X Bookmarks</h1>
+  <div class="sub">private library · single account · log in to continue</div>
+  {% if error %}<div class="err" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" autocomplete="on">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" required autofocus>
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+  <div class="note">No public registration. Credentials are set by the server owner via environment variables. This app never asks for your X password.</div>
+</main>
+</body>
+</html>

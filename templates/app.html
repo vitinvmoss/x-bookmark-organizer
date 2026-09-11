@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X Bookmarks — Library</title>
+<style>
+:root{
+  --bg:#0f1419;--panel:#15202b;--panel2:#192734;--line:#253341;
+  --text:#e7e9ea;--dim:#8b98a5;--accent:#1d9bf0;--accent2:#1a8cd8;
+  --good:#00ba7c;--warn:#ffd400;--bad:#f4212e;--chip:#1e2c3a;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;cursor:pointer;border:0;border-radius:14px;
+  padding:10px 14px;min-height:44px;background:var(--chip);color:var(--text)}
+button:hover{filter:brightness(1.25)}
+button.primary{background:var(--accent);color:#fff}
+button.danger{background:transparent;color:var(--bad);
+  border:1px solid var(--bad)}
+button.small{padding:8px 12px;font-size:14px;border-radius:10px;min-height:40px}
+button:disabled{opacity:.5;cursor:wait}
+input,select{font:inherit;background:var(--panel2);color:var(--text);
+  border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:44px}
+input:focus,select:focus{outline:1px solid var(--accent)}
+#topbar-site{position:sticky;top:0;z-index:10;background:var(--panel);
+  border-bottom:1px solid var(--line);padding:8px 12px;display:flex;
+  gap:8px;align-items:center;flex-wrap:wrap}
+#topbar-site .who{color:var(--dim);font-size:13px}
+@media (max-width:820px){
+  #layout{display:block !important}
+  aside{position:static !important;height:auto !important;border-right:0 !important;
+    border-bottom:1px solid var(--line)}
+  main{padding:12px !important;max-width:none !important}
+  .dtable thead{display:none}
+  .dtable tr{display:block;border:1px solid var(--line);border-radius:12px;margin-bottom:8px}
+  .dtable td{display:block;border:0;padding:4px 8px}
+}
+#layout{display:grid;grid-template-columns:270px 1fr;min-height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--line);
+  padding:14px;position:sticky;top:0;height:100vh;overflow:auto}
+aside h1{font-size:16px;margin:0 0 4px}
+aside .sub{color:var(--dim);font-size:12px;margin-bottom:12px}
+nav li{list-style:none}
+nav ul{padding:0;margin:8px 0}
+nav .item{display:flex;justify-content:space-between;gap:8px;
+  padding:7px 10px;border-radius:10px;cursor:pointer;color:var(--text)}
+nav .item:hover{background:var(--panel2)}
+nav .item.active{background:var(--panel2);color:var(--accent);
+  font-weight:600}
+nav .n{color:var(--dim);font-size:12px}
+nav .sep{color:var(--dim);font-size:11px;text-transform:uppercase;
+  letter-spacing:.08em;margin:12px 10px 4px}
+#dash{font-size:12px;color:var(--dim);background:var(--panel2);
+  border:1px solid var(--line);border-radius:12px;padding:8px 10px;
+  margin:8px 0;line-height:1.7}
+#dash b{color:var(--text)}
+main{padding:16px 20px;max-width:1020px}
+#searchwrap{background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;padding:12px;margin-bottom:10px}
+#q{width:100%;font-size:16px;padding:11px 16px;border-radius:22px}
+#searchhint{color:var(--dim);font-size:12px;margin-top:6px}
+#filters{display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+  margin-top:8px}
+#filters input.mini,#filters select.mini{padding:4px 8px;font-size:12px;
+  border-radius:8px}
+#topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  margin-bottom:10px}
+.badge{font-size:11px;padding:2px 8px;border-radius:10px;
+  background:var(--chip);color:var(--dim)}
+.badge.review{background:#3a2b00;color:var(--warn)}
+.badge.lowconf{background:#331420;color:#ff7a9c}
+.badge.high{background:#00331f;color:var(--good)}
+.badge.med{background:#3a2b00;color:var(--warn)}
+.badge.manual{background:#1c2f4a;color:var(--accent)}
+.card{background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;padding:12px 14px;margin-bottom:10px}
+.card .head{display:flex;gap:10px;align-items:center}
+.card .head img.av{width:40px;height:40px;border-radius:50%;
+  background:var(--panel2)}
+.card .who{display:flex;flex-direction:column;min-width:0}
+.card .who .name{font-weight:600;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.card .who .handle,.card .who .date{color:var(--dim);font-size:12px}
+.card .txt{margin:8px 0 6px;white-space:pre-wrap;word-wrap:break-word}
+.card .thumb{max-width:100%;border-radius:12px;border:1px solid var(--line);
+  display:block;margin:8px 0}
+.card .dom{color:var(--accent);font-size:12px}
+.card .reason{color:var(--dim);font-size:12px;margin-top:6px;font-style:italic}
+.card .alts{font-size:12px;color:var(--dim);margin-top:2px}
+.card .cats{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font-size:12px;background:var(--chip);border:1px solid var(--line);
+  border-radius:12px;padding:2px 9px;cursor:pointer;color:var(--text)}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.chip.add{color:var(--dim)}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px}
+select.mini,input.mini{padding:2px 6px;font-size:12px;border-radius:8px}
+#newcat{display:flex;gap:6px;margin:8px 10px 0}
+#toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);
+  border:1px solid var(--line);padding:10px 16px;border-radius:12px;
+  display:none;z-index:9}
+#sentinel{height:10px}
+.dim{color:var(--dim)}
+.spacer{flex:1}
+#bulkbar{background:var(--panel2);border:1px solid var(--line);
+  border-radius:12px;padding:8px 10px;margin-bottom:10px;display:none}
+#bulkbar.show{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+#discover-modal{position:fixed;inset:0;background:rgba(0,0,0,.65);
+  display:none;align-items:flex-start;justify-content:center;z-index:20;
+  overflow:auto;padding:40px 16px}
+#discover-modal.open{display:flex}
+.dbox{background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;max-width:900px;width:100%;padding:16px}
+.dbox h2{margin:0 0 2px;font-size:18px}
+.dbox .meta{color:var(--dim);font-size:12px;margin-bottom:12px}
+.dtable{width:100%;border-collapse:collapse}
+.dtable th{text-align:left;color:var(--dim);font-size:11px;
+  text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;
+  border-bottom:1px solid var(--line)}
+.dtable td{padding:8px;border-bottom:1px solid var(--line);
+  vertical-align:top;font-size:13px}
+.dtable input.dname{width:100%;padding:4px 8px}
+.dtable textarea.ddesc{width:100%;min-height:34px;padding:4px 8px;
+  resize:vertical;font:inherit;color:var(--text);background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px}
+.dtable textarea.ddesc:focus{outline:1px solid var(--accent)}
+.dtable .dcount{color:var(--dim);white-space:nowrap}
+.dtable .dconf{white-space:nowrap}
+.dtable .dex{color:var(--dim);font-size:12px;display:block;margin-top:4px}
+.dtable .dex div{margin:2px 0;max-width:260px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dfoot{display:flex;gap:10px;align-items:center;margin-top:12px;
+  flex-wrap:wrap}
+.dfoot .spacer{flex:1}
+.dup{border:1px dashed var(--warn);border-radius:12px;padding:8px 10px;
+  margin-bottom:8px;font-size:13px}
+</style>
+</head>
+<body>
+<div id="topbar-site">
+  <b>📚 X Bookmarks</b>
+  <a href="/upload" style="font-size:15px">📤 Upload</a>
+  <span class="spacer" style="flex:1"></span>
+  <span class="who" id="whoami">{{ user }}</span>
+  <button class="small" id="btn-logout">Log out</button>
+</div>
+<div id="layout">
+  <aside>
+    <h1>📚 X Bookmarks</h1>
+    <div class="sub">local organizer · no X writes</div>
+    <div id="dash">loading…</div>
+    <nav id="nav"></nav>
+    <div class="sep">Organize</div>
+    <div class="row">
+      <a href="/upload" style="flex:1"><button class="primary" style="width:100%">📤 Upload bookmarks</button></a>
+    </div>
+    <div class="sep">AI provider (cloud = opt-in)</div>
+    <div class="dim" style="font-size:12px;margin:0 10px 6px">Cloud AI is <b>off by default</b>. Heuristic mode never uploads your bookmarks. Ticking “Use cloud AI” sends bookmark text to the selected hosted provider.</div>
+    <div class="row" style="margin:0 10px">
+      <select id="ai-engine" class="mini" style="flex:1" title="AI provider">
+        <option value="heuristic">heuristic (offline, default)</option>
+        <option value="gemini">gemini (Google, free Flash tier)</option>
+        <option value="groq">groq</option>
+        <option value="openrouter">openrouter</option>
+      </select>
+    </div>
+    <label class="dim" style="font-size:12px;display:block;margin:4px 10px">
+      <input type="checkbox" id="cloud-ok"> Use cloud AI (send bookmark text to provider)
+    </label>
+    <div class="row" style="margin:0 10px">
+      <button class="small" id="btn-aitest" style="flex:1">Test AI connection</button>
+    </div>
+    <div id="ai-status" class="dim" style="font-size:12px;margin:4px 10px 0"></div>
+    <div class="row">
+      <button class="primary" id="btn-discover" style="flex:1">✨ Discover Categories</button>
+    </div>
+    <div class="row">
+      <button class="primary" id="btn-classify" style="flex:1">🗂 Classify All</button>
+    </div>
+    <label class="dim" style="font-size:12px;display:block;margin-top:4px">
+      <input type="checkbox" id="cls-force"> re-classify everything (ignore manual + done)
+    </label>
+    <div id="discover-status" class="dim" style="font-size:12px;margin:4px 10px 0"></div>
+    <div id="classify-status" class="dim" style="font-size:12px;margin:4px 10px 0"></div>
+    <div class="sep">New category</div>
+    <div id="newcat">
+      <input id="nc-name" placeholder="name" style="flex:1;min-width:0">
+      <button class="primary" id="nc-add">Add</button>
+    </div>
+    <div class="sep">Folders (local only)</div>
+    <div class="dim" style="font-size:11px;margin:0 10px 6px">These are LOCAL folders in this app — not X folders. Deleting one never deletes bookmarks; bookmarks left with no folder become Unsorted.</div>
+    <div id="catman" style="margin:0 10px"></div>
+    <div class="sep">Library</div>
+    <div class="row">
+      <button class="small" id="btn-export-csv">Export CSV</button>
+      <button class="small" id="btn-export-md">Markdown</button>
+    </div>
+    <div class="row">
+      <button class="small" id="btn-backup">Backup ZIP</button>
+      <span id="ai-chip" class="badge">AI: …</span>
+    </div>
+  </aside>
+  <main>
+    <div id="searchwrap">
+      <input id="q" placeholder="🔍 Search everything: bitcoin · @elonmusk · #AI · github.com · Must Read · crypto github">
+      <div id="searchhint">searches text · author · @mentions · #hashtags · URLs · domains · topics · intent · tags — multiple words = AND · offline</div>
+      <div id="filters">
+        <select id="f-intent" class="mini" title="intent filter">
+          <option value="">intent: all</option>
+        </select>
+        <select id="f-conf" class="mini" title="confidence filter">
+          <option value="">confidence: all</option>
+          <option value="HIGH">HIGH ≥0.85</option>
+          <option value="MEDIUM">MEDIUM 0.6–0.84</option>
+          <option value="LOW">LOW &lt;0.6</option>
+        </select>
+        <input id="f-author" class="mini" placeholder="author…" style="width:110px">
+        <input id="f-domain" class="mini" placeholder="domain…" style="width:130px">
+        <label class="dim" style="font-size:12px"><input type="checkbox" id="f-unsorted"> unsorted</label>
+        <label class="dim" style="font-size:12px"><input type="checkbox" id="f-review"> needs review</label>
+        <select id="sort" class="mini">
+          <option value="date_desc">Newest first</option>
+          <option value="date_asc">Oldest first</option>
+          <option value="author_asc">Author A→Z</option>
+          <option value="confidence_asc">Lowest confidence</option>
+        </select>
+        <button class="small" id="btn-clear">clear</button>
+      </div>
+    </div>
+    <div id="topbar">
+      <button class="primary" id="btn-review">Review mode</button>
+      <button id="btn-reanalyze">✨ Re-analyze selected</button>
+      <span class="spacer"></span>
+      <span id="dup-link"></span>
+    </div>
+    <div id="bulkbar">
+      <b id="bulk-count">0 selected</b>
+      <button class="small primary" id="bulk-accept">✓ accept</button>
+      <button class="small" id="bulk-done">mark done</button>
+      <select id="bulk-intent" class="mini"><option value="">set intent…</option></select>
+      <input id="bulk-cat" class="mini" placeholder="add category…">
+      <button class="small" id="bulk-addcat">+ category</button>
+      <button class="small" id="bulk-clear">clear</button>
+    </div>
+    <div id="meta" class="dim" style="margin-bottom:10px"></div>
+    <div id="loading" class="card" style="display:none">⏳ Loading bookmarks…</div>
+    <div id="load-error" class="card" style="display:none;border-color:var(--bad)"></div>
+    <div id="review-explainer" class="card" style="display:none;border-color:var(--warn)"></div>
+    <div id="cards"></div>
+    <div id="sentinel"></div>
+  </main>
+</div>
+<div id="toast"></div>
+<div id="discover-modal">
+  <div class="dbox">
+    <h2>✨ Discover Categories</h2>
+    <div class="meta" id="d-meta"></div>
+    <table class="dtable">
+      <thead><tr>
+        <th style="width:26%">Category</th>
+        <th style="width:34%">Description</th>
+        <th style="width:8%">Count</th>
+        <th style="width:8%">Confidence</th>
+        <th>Example bookmarks</th>
+        <th style="width:6%"></th>
+      </tr></thead>
+      <tbody id="d-rows"></tbody>
+    </table>
+    <div class="dfoot">
+      <button id="d-add">+ Create category</button>
+      <span class="spacer"></span>
+      <span class="dim" id="d-note"></span>
+      <button id="d-accept" class="primary">Accept Category Structure</button>
+      <button id="d-close">Close</button>
+    </div>
+  </div>
+</div>
+<script>
+const CSRF = {{ csrf_token|tojson }};
+// ---------------- state & api ----------------
+const S = {
+  q:"", cat:"", intent:"", author:"", domain:"", conf:"",
+  unsorted:false, needs_review:false,
+  mode:"", view:"all", sort:"date_desc",
+  page:1, per:30, total:0, state:null, selected:new Set(),
+  loading:false, done:false
+};
+const $ = s => document.querySelector(s);
+const esc = t => (t||"").replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(msg, ms=2200){
+  const t = $("#toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(()=>t.style.display="none", ms);
+}
+async function api(path, opts){
+  opts = opts || {};
+  opts.credentials = "same-origin";
+  opts.headers = Object.assign({"X-CSRF-Token": CSRF}, opts.headers || {});
+  const r = await fetch(path, opts);
+  if(r.status === 401){ location.href = "/login"; throw new Error("login required"); }
+  let j = {};
+  try{ j = await r.json(); }catch(e){ throw new Error("bad response " + r.status); }
+  if(!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+const post = (path, body) => api(path, {
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body: JSON.stringify(Object.assign({csrf_token: CSRF}, body || {}))
+});
+function aiEngine(){ const el = document.querySelector("#ai-engine"); return el ? el.value : "heuristic"; }
+function cloudOk(){ const el = document.querySelector("#cloud-ok"); return el ? el.checked === true : false; }
+const INTENTS = ["read_later","must_read","try_this","reference",
+  "inspiration","news","entertainment"];
+const intentLabel = v => v ? v.replace(/_/g," ") : "intent…";
+
+// ---------------- navigation ----------------
+function renderNav(){
+  const st = S.state || {};
+  const counts = st.counts || {};
+  const mk = (label, filter, n, key) =>
+    `<li><div class="item${key===S.__active?" active":""}" data-f='${filter}'>` +
+    `<span>${label}</span><span class="n">${n}</span></div></li>`;
+  const items = [];
+  items.push(mk("📥 All bookmarks", "", st.total ?? 0, "all"));
+  items.push(mk("🕓 Unsorted",
+    JSON.stringify({unsorted:true}), st.unsorted ?? 0, "unsorted"));
+  items.push(mk("⚠️ Needs review",
+    JSON.stringify({needs_review:true}), st.review ?? 0, "review"));
+  items.push(mk("👯 Possible duplicates",
+    JSON.stringify({view:"dups"}), st.duplicates ?? 0, "dups"));
+  $("#nav").innerHTML = '<ul class="views">' + items.join("") +
+    '</ul><div class="sep">Folders</div><ul class="cats">' +
+    (st.categories||[]).map(c =>
+      mk("📁 " + esc(c.name), JSON.stringify({cat:c.name}),
+         counts[c.name] ?? 0, "c:"+c.name)).join("") + "</ul>";
+  document.querySelectorAll("#nav .item").forEach(el=>{
+    el.onclick = ()=>{
+      const f = JSON.parse(el.dataset.f || "{}");
+      S.view = f.view || "all";
+      S.cat = f.cat || "";
+      S.intent = ""; $("#f-intent").value = "";
+      if(f.unsorted){ S.unsorted = true; $("#f-unsorted").checked = true; }
+      else if(f.needs_review){ S.needs_review = true; $("#f-review").checked = true; }
+      else if(!S.view){ S.unsorted = false; S.needs_review = false;
+        $("#f-unsorted").checked = false; $("#f-review").checked = false; }
+      if(S.view !== "dups" && !f.unsorted && !f.needs_review && !f.cat){
+        S.unsorted = false; S.needs_review = false;
+        $("#f-unsorted").checked = false; $("#f-review").checked = false;
+      }
+      S.mode = "";
+      $("#btn-review").textContent = "Review mode";
+      $("#btn-review").classList.add("primary");
+      S.__active = el.textContent && el.dataset.f
+        ? (S.view==="dups" ? "dups"
+          : S.cat ? "c:"+S.cat
+          : (S.unsorted ? "unsorted" : S.needs_review ? "review" : "all"))
+        : "all";
+      renderReviewExplainer();
+      if(S.view === "dups") loadDups();
+      else load(true);
+      renderNav();
+    };
+  });
+}
+
+function renderDash(){
+  const st = S.state || {};
+  const c = st.confidence || {};
+  const intents = st.intents || {};
+  const il = st.intent_labels || {};
+  const iline = Object.entries(intents).filter(e=>e[1]>0)
+    .map(([k,n])=>`${esc(il[k]||k)}: <b>${n}</b>`).join(" · ") || "—";
+  $("#dash").innerHTML =
+    `total <b>${st.total ?? 0}</b> · folders <b>${(st.categories||[]).length}</b><br>` +
+    `unsorted <b>${st.unsorted ?? 0}</b> · review <b>${st.review ?? 0}</b> · dups <b>${st.duplicates ?? 0}</b><br>` +
+    `HIGH <b>${c.HIGH ?? 0}</b> · MED <b>${c.MEDIUM ?? 0}</b> · LOW <b>${c.LOW ?? 0}</b><br>` +
+    `<span style="font-size:11px">${iline}</span>`;
+}
+
+// ---------------- state refresh ----------------
+function renderCatman(){
+  const st = S.state || {};
+  const box = $("#catman");
+  const cats = st.categories || [];
+  if(!cats.length){ box.innerHTML = '<div class="dim" style="font-size:12px">no folders yet — run Discover Categories.</div>'; return; }
+  box.innerHTML = "";
+  cats.forEach(c=>{
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.cssText = "margin:2px 0";
+    row.innerHTML = `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px" title="${esc(c.description||"")}">${esc(c.name)}</span>`;
+    const rn = document.createElement("button");
+    rn.className = "small"; rn.textContent = "rename"; rn.title = "rename local folder";
+    rn.onclick = async ()=>{
+      const to = prompt("Rename local folder (LOCAL only, not X):", c.name);
+      if(!to || to.trim() === c.name) return;
+      try{ await post("/api/categories/rename", {from: c.name, to: to.trim()});
+        toast("renamed ✓"); await refreshState(); load(true);
+      }catch(e){ toast(e.message); }
+    };
+    const del = document.createElement("button");
+    del.className = "small danger"; del.textContent = "delete"; del.title = "delete local folder (bookmarks become Unsorted, never deleted)";
+    del.onclick = async ()=>{
+      if(!confirm(`Delete LOCAL folder "${c.name}"?\n\nBookmarks are NOT deleted. Bookmarks only in this folder become Unsorted; bookmarks in other folders keep those folders.\n\nThis does not touch X.`)) return;
+      try{ const r = await post("/api/categories/delete", {name: c.name});
+        if(!r.deleted) return toast("folder not found (already gone?)");
+        toast(`deleted "${c.name}" — bookmarks kept, orphans → Unsorted`);
+        await refreshState(); load(true);
+      }catch(e){ toast(e.message); }
+    };
+    row.appendChild(rn); row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+function renderReviewExplainer(){
+  const box = $("#review-explainer");
+  const inReview = S.mode === "review" || S.needs_review || S.view === "all" && false;
+  const show = S.mode === "review" || S.needs_review;
+  if(!show){ box.style.display = "none"; return; }
+  box.style.display = "block";
+  box.innerHTML =
+    `<b>⚠️ Needs Review</b> — Needs Review contains bookmarks whose classification is uncertain, ` +
+    `usually because confidence is below 0.60, or because the bookmark has not been classified yet. ` +
+    `Review a bookmark to accept or change its categories and intent.<br>` +
+    `<span class="dim">Actions per bookmark: <b>✓ accept</b> as-is · click folder chips to add/remove · intent dropdown to change intent · Save tags · <b>mark reviewed</b> removes it here but keeps it under All.<br>` +
+    `Unsorted = no topic category · Needs Review = uncertain or not yet reviewed · Possible Duplicates = possible duplicate records.</span>`;
+}
+async function refreshState(){
+  S.state = await api("/api/state");
+  renderNav(); renderDash(); renderCatman(); renderReviewExplainer();
+  const a = S.state.ai || {};
+  const llm = S.state.llm || {};
+  $("#ai-chip").textContent = a.available
+    ? ("AI: " + (a.endpoint.model || "ready"))
+    : "AI: offline (heuristic)";
+  $("#ai-chip").title = a.available ? "" : (a.hint || "");
+  const stBox = $("#ai-status");
+  if(stBox && !stBox.dataset.touched){
+    const dp = llm.default_provider || "gemini";
+    const flags = ["gemini","groq","openrouter"].map(p =>
+      `${p}:${(llm[p]||{}).configured ? "key✓" : "no key"}`).join(" · ");
+    stBox.textContent = `provider default: ${dp} · ${flags} · cloud OFF unless ticked`;
+  }
+  const fi = $("#f-intent");
+  const cur = fi.value || S.intent;
+  fi.innerHTML = '<option value="">intent: all</option>' + INTENTS.map(v =>
+    `<option value="${v}">${esc((S.state.intent_labels||{})[v]||v.replace(/_/g," "))}</option>`).join("");
+  fi.value = cur; S.intent = cur;
+  const bi = $("#bulk-intent");
+  bi.innerHTML = '<option value="">set intent…</option>' + INTENTS.map(v =>
+    `<option value="${v}">${esc(v.replace(/_/g," "))}</option>`).join("");
+}
+
+// ---------------- cards ----------------
+function chipBar(c){
+  const cats = S.state ? (S.state.categories||[]) : [];
+  const mine = new Set(c.categories||[]);
+  const chips = cats.slice(0, 60).map(cat =>
+    `<span class="chip${mine.has(cat.name)?" on":""}" data-cat="${esc(cat.name)}"` +
+    ` title="toggle category">${esc(cat.name)}</span>`).join("");
+  return `<div class="cats">${chips}` +
+    `<span class="chip add" data-add="1">+ category…</span></div>`;
+}
+function confBadge(c){
+  if(c.confidence === null || c.confidence === undefined) return "";
+  const lvl = c.confidence_level || "LOW";
+  const cls = lvl === "HIGH" ? "high" : lvl === "MEDIUM" ? "med" : "lowconf";
+  return `<span class="badge ${cls}" title="classification confidence — ${esc(c.reason||"")}">${lvl} ${Math.round(c.confidence*100)}%</span>`;
+}
+function cardHTML(c){
+  const badges = [
+    `<label class="badge"><input type="checkbox" class="sel" value="${c.id}"` +
+    `${S.selected.has(c.id)?"checked":""}> pick</label>`,
+    confBadge(c),
+  ];
+  if(c.manual) badges.push(`<span class="badge manual" title="you corrected this — auto-classify will not overwrite">manual ✓</span>`);
+  if(c.reviewed) badges.push(`<span class="badge" title="reviewed">reviewed</span>`);
+  if(c.status !== "available")
+    badges.push(`<span class="badge lowconf">${esc(c.status)}</span>`);
+  if(c.intent) badges.push(`<span class="badge">🎯 ${esc(intentLabel(c.intent))}</span>`);
+  const dom = (c.domains||[]).map(d =>
+    `<span class="dom">🔗 ${esc(d)}</span>`).join(" ");
+  const tags = (c.hashtags||[]).map(t =>
+    `<span class="dim">#${esc(t)}</span>`).join(" ");
+  const men = (c.mentions||[]).map(m =>
+    `<span class="dim">@${esc(m.replace(/^@/,""))}</span>`).join(" ");
+  const intentSel = ["", ...INTENTS]
+    .map(v => `<option value="${v}"${c.intent===v?" selected":""}>` +
+      intentLabel(v)).join("");
+  const reason = c.reason ? `<div class="reason">💡 ${esc(c.reason)}</div>` : "";
+  const alts = (c.alternatives||[]).length
+    ? `<div class="alts">also: ${c.alternatives.map(esc).join(" · ")}</div>` : "";
+  const confLine = (c.confidence === null || c.confidence === undefined)
+    ? `<div class="dim" style="font-size:12px">confidence: not classified yet · categories: ${esc((c.categories||[]).join(", ") || "none (Unsorted)")}</div>`
+    : `<div class="dim" style="font-size:12px">confidence: ${Math.round(c.confidence*100)}% (${esc(c.confidence_level||"")}) · categories: ${esc((c.categories||[]).join(", ") || "none (Unsorted)")}</div>`;
+  const needLine = (c.needs_review && c.review_reason)
+    ? `<div class="badge review" title="why this needs review">⚠️ needs review: ${esc(c.review_reason)}</div>` : "";
+  return `<div class="card" data-id="${c.id}">
+    <div class="head">
+      <img class="av" src="${esc(c.avatar)}" loading="lazy"
+        onerror="this.style.visibility='hidden'">
+      <div class="who">
+        <span class="name">${esc(c.author)}</span>
+        <span class="handle">@${esc(c.handle)} · ${esc(c.date)}</span>
+      </div>
+      <span class="spacer"></span>
+      <a href="${esc(c.x_url)}" target="_blank" rel="noopener">Post ↗</a>
+      <a href="${"https://x.com/" + esc(c.handle)}" target="_blank" rel="noopener" title="open account">Account ↗</a>
+    </div>
+    <div class="txt">${esc(c.text)}</div>
+    ${c.thumb ? `<img class="thumb" src="${esc(c.thumb)}" loading="lazy">` : ""}
+    <div class="row">${badges.join(" ")}<span class="spacer"></span>
+      ${tags} ${men} ${dom}</div>
+    ${needLine}${confLine}${reason}${alts}
+    ${chipBar(c)}
+    <div class="row">
+      <select class="mini intent">${intentSel}</select>
+      <input class="mini tags" placeholder="tags, comma…" value="${esc((c.tags||[]).join(", "))}" style="flex:1;min-width:120px">
+      <button class="small save">Save tags</button>
+      <button class="small primary ok" title="accept as-is / mark reviewed — removes from Needs Review but keeps the bookmark under All">✓ accept</button>
+      <button class="small done" title="mark reviewed/done without changing categories">mark reviewed</button>
+    </div>
+  </div>`;
+}
+function updateBulk(){
+  const n = S.selected.size;
+  $("#bulkbar").classList.toggle("show", n > 0);
+  $("#bulk-count").textContent = n + " selected";
+  $("#meta").textContent = (S.total || 0) + " bookmarks" +
+    (n ? " · " + n + " selected" : "");
+}
+function wireCard(el){
+  const id = el.dataset.id;
+  el.querySelectorAll(".chip[data-cat]").forEach(ch=>{
+    ch.onclick = async ()=>{
+      const on = !ch.classList.contains("on");
+      try{
+        await post("/api/bookmarks/toggle",
+                   {id, category: ch.dataset.cat, on});
+        ch.classList.toggle("on", on); refreshState(); updateBulk();
+      }catch(e){ toast(e.message); }
+    };
+  });
+  const add = el.querySelector(".chip.add");
+  if(add) add.onclick = async ()=>{
+    const name = prompt("New category name:");
+    if(!name) return;
+    try{
+      await post("/api/categories", {name});
+      await post("/api/bookmarks/toggle", {id, category:name, on:true});
+      await refreshState(); toast("added to " + name);
+    }catch(e){ toast(e.message); }
+  };
+  const sel = el.querySelector("select.intent");
+  if(sel) sel.onchange = async ()=>{
+    try{
+      await post("/api/bookmarks/intent", {id, intent: sel.value});
+      toast("intent: " + (sel.value ? intentLabel(sel.value) : "cleared"));
+      refreshState();
+    }catch(e){ toast(e.message); }
+  };
+  const save = el.querySelector("button.save");
+  if(save) save.onclick = async ()=>{
+    const tags = el.querySelector("input.tags").value
+      .split(",").map(t=>t.trim()).filter(Boolean);
+    try{
+      await post("/api/bookmarks/tags", {id, tags});
+      toast("tags saved");
+    }catch(e){ toast(e.message); }
+  };
+  const ok = el.querySelector("button.ok");
+  if(ok) ok.onclick = async ()=>{
+    try{
+      await post("/api/review", {id, done: true});
+      toast("accepted ✓ — removed from Needs Review, still under All");
+      el.querySelectorAll(".badge").forEach(()=>{});
+      await refreshState(); load(true);
+    }catch(e){ toast(e.message); }
+  };
+  const doneBtn = el.querySelector("button.done");
+  if(doneBtn) doneBtn.onclick = async ()=>{
+    try{
+      await post("/api/review", {id, done: true});
+      toast("marked reviewed ✓");
+      await refreshState(); load(true);
+    }catch(e){ toast(e.message); }
+  };
+  const cb = el.querySelector("input.sel");
+  if(cb) cb.onchange = ()=>{
+    cb.checked ? S.selected.add(id) : S.selected.delete(id);
+    updateBulk();
+  };
+}
+
+// ---------------- load & paginate ----------------
+async function load(reset){
+  renderReviewExplainer();
+  if(S.view === "dups") return loadDups();
+  if(S.loading || (S.done && !reset)) return;
+  S.loading = true;
+  $("#load-error").style.display = "none";
+  if(reset){ S.page = 1; $("#cards").innerHTML = ""; S.done = false; $("#loading").style.display = "block"; }
+  const p = new URLSearchParams();
+  if(S.q) p.set("q", S.q);
+  if(S.cat) p.set("cat", S.cat);
+  if(S.intent) p.set("intent", S.intent);
+  if(S.author) p.set("author", S.author);
+  if(S.domain) p.set("domain", S.domain);
+  if(S.conf) p.set("conf", S.conf);
+  if(S.unsorted) p.set("unsorted", "1");
+  if(S.needs_review) p.set("needs_review", "1");
+  if(S.mode) p.set("mode", S.mode);
+  p.set("sort", S.sort); p.set("page", S.page); p.set("per", S.per);
+  try{
+    const j = await api("/api/bookmarks?" + p.toString());
+    S.total = j.total;
+    $("#loading").style.display = "none";
+    if(reset && (!j.cards || !j.cards.length)){
+      $("#cards").innerHTML = '<div class="card dim">No bookmarks yet. <a href="/upload">Upload an export</a> or load demo data to get started.</div>';
+      S.done = true; S.loading = false; updateBulk(); return;
+    }
+    const frag = document.createElement("div");
+    for(const c of j.cards){
+      frag.insertAdjacentHTML("beforeend", cardHTML(c));
+    }
+    [...frag.children].forEach(el => { $("#cards").appendChild(el);
+                                     wireCard(el); });
+    updateBulk();
+    if(j.cards.length < S.per) S.done = true;
+    else S.page += 1;
+  }catch(e){
+    $("#loading").style.display = "none";
+    const box = $("#load-error");
+    box.style.display = "block";
+    box.innerHTML = "Failed to load: " + esc(e.message) +
+      ' <button class="small" onclick="document.querySelector(\'#load-error\').style.display=\'none\'">dismiss</button>';
+    toast(e.message); S.done = true;
+  }
+  S.loading = false;
+}
+async function loadDups(){
+  $("#cards").innerHTML = '<div class="dim">finding duplicates…</div>';
+  try{
+    const j = await api("/api/duplicates");
+    S.total = j.total;
+    if(!j.groups.length){
+      $("#cards").innerHTML = '<div class="dim">no possible duplicates found 🎉</div>';
+    } else {
+      $("#cards").innerHTML = j.groups.slice(0, 60).map(g =>
+        `<div class="dup"><b>${esc(g.kind.replace(/_/g," "))}</b> · ` +
+        g.ids.map(id => `<a href="#" data-open="${id}">${esc(id)}</a>`).join(", ") +
+        `<div class="dim">${esc(g.detail||"")}</div></div>`).join("");
+      $("#cards").querySelectorAll("[data-open]").forEach(a=>{
+        a.onclick = async e=>{
+          e.preventDefault();
+          S.view = "all"; S.q = a.dataset.open; $("#q").value = S.q;
+          renderNav(); await load(true);
+          S.q = ""; $("#q").value = "";
+        };
+      });
+    }
+    updateBulk();
+  }catch(e){ $("#cards").innerHTML = "failed: " + esc(e.message); }
+}
+
+// ---------------- top bar & sidebar wiring ----------------
+let qTimer = null;
+$("#q").addEventListener("input", e=>{
+  clearTimeout(qTimer);
+  qTimer = setTimeout(()=>{ S.q = e.target.value; S.view = "all"; load(true); }, 250);
+});
+$("#sort").onchange = e=>{ S.sort = e.target.value; load(true); };
+$("#f-intent").onchange = e=>{ S.intent = e.target.value; load(true); };
+$("#f-conf").onchange = e=>{ S.conf = e.target.value; load(true); };
+$("#f-author").addEventListener("input", e=>{
+  clearTimeout(qTimer);
+  qTimer = setTimeout(()=>{ S.author = e.target.value.trim(); load(true); }, 300);
+});
+$("#f-domain").addEventListener("input", e=>{
+  clearTimeout(qTimer);
+  qTimer = setTimeout(()=>{ S.domain = e.target.value.trim(); load(true); }, 300);
+});
+$("#f-unsorted").onchange = e=>{ S.unsorted = e.target.checked; S.view="all"; renderReviewExplainer(); load(true); };
+$("#f-review").onchange = e=>{ S.needs_review = e.target.checked; S.view="all"; renderReviewExplainer(); load(true); };
+$("#btn-clear").onclick = ()=>{
+  S.q="";S.cat="";S.intent="";S.author="";S.domain="";S.conf="";
+  S.unsorted=false;S.needs_review=false;S.mode="";S.view="all";
+  $("#q").value="";$("#f-intent").value="";$("#f-conf").value="";
+  $("#f-author").value="";$("#f-domain").value="";
+  $("#f-unsorted").checked=false;$("#f-review").checked=false;
+  renderNav(); load(true);
+};
+$("#btn-review").onclick = ()=>{
+  S.mode = S.mode === "review" ? "" : "review";
+  $("#btn-review").textContent = S.mode === "review"
+    ? "Exit review" : "Review mode";
+  $("#btn-review").classList.toggle("primary", S.mode !== "review");
+  S.view = "all"; renderReviewExplainer(); load(true);
+};
+$("#btn-reanalyze").onclick = async ()=>{
+  if(!S.selected.size) return toast("pick bookmarks first (tick ☐ pick)");
+  const engine = aiEngine();
+  toast("re-analyzing " + S.selected.size + " with " + engine + "…");
+  try{
+    const r = await post("/api/reanalyze",
+                         {ids:[...S.selected], engine, cloud_ok: cloudOk()});
+    toast("done: " + r.result.classified + " analyzed");
+    S.selected.clear(); await refreshState(); load(true);
+  }catch(e){ toast(e.message); }
+};
+// bulk ops
+$("#bulk-clear").onclick = ()=>{ S.selected.clear();
+  document.querySelectorAll("input.sel").forEach(c=>c.checked=false);
+  updateBulk(); };
+$("#bulk-accept").onclick = async ()=>{
+  try{
+    const r = await post("/api/review", {ids:[...S.selected], done:true});
+    toast("accepted " + r.updated); S.selected.clear();
+    await refreshState(); load(true);
+  }catch(e){ toast(e.message); }
+};
+$("#bulk-done").onclick = $("#bulk-accept").onclick;
+$("#bulk-intent").onchange = async e=>{
+  if(!e.target.value) return;
+  try{
+    await post("/api/review", {ids:[...S.selected], intent:e.target.value});
+    toast("intent set"); e.target.value = "";
+    await refreshState(); load(true);
+  }catch(e){ toast(e.message); }
+};
+$("#bulk-addcat").onclick = async ()=>{
+  const name = $("#bulk-cat").value.trim();
+  if(!name || !S.selected.size) return toast("need a category + selection");
+  try{
+    for(const id of S.selected)
+      await post("/api/bookmarks/toggle", {id, category:name, on:true});
+    toast("added " + S.selected.size + " to " + name);
+    $("#bulk-cat").value = ""; S.selected.clear();
+    await refreshState(); load(true);
+  }catch(e){ toast(e.message); }
+};
+$("#nc-add").onclick = async ()=>{
+  const name = $("#nc-name").value.trim();
+  if(!name) return;
+  try{ await post("/api/categories", {name});
+       $("#nc-name").value = ""; await refreshState();
+       toast("category added"); }catch(e){ toast(e.message); }
+};
+$("#btn-export-csv").onclick = ()=>location.href="/api/export?format=csv";
+$("#btn-export-md").onclick = ()=>location.href="/api/export?format=md";
+$("#btn-backup").onclick = ()=>location.href="/api/backup";
+$("#btn-classify").onclick = async ()=>{
+  const btn = $("#btn-classify"); btn.disabled = true;
+  const st = $("#classify-status");
+  $("#loading").style.display = "block";
+  try{
+    const engine = aiEngine();
+    st.textContent = "classifying with " + engine + " (20/batch, resumable, per-batch saved)… UI stays usable; this may take a while.";
+    const to = setTimeout(()=>{ st.textContent += " (still working — server saves each batch, safe to wait)…"; }, 15000);
+    let r;
+    try{
+      r = await post("/api/classify-all",
+        {engine, force: $("#cls-force").checked, cloud_ok: cloudOk()});
+    }finally{ clearTimeout(to); }
+    const res = r.result || {};
+    const mode = res.mode || engine;
+    const errs = (res.ai_errors || res.errors || []).join(" | ");
+    st.textContent = `done [${mode}]: ${res.classified} classified, ` +
+      `${res.skipped} skipped, ${res.unsorted} unsorted ` +
+      `(${res.batches} batches)` + (errs ? ` — AI note: ${errs}` : "") +
+      (res.note ? ` — ${res.note}` : "") +
+      (res.provider_actually_used ? ` — provider used: ${res.provider_actually_used}` : "");
+    toast(`Classify All done [${mode}]`);
+    S.selected.clear(); await refreshState(); load(true);
+  }catch(e){
+    // Fetch aborted / server busy / disconnect: progress was still saved
+    // per batch, so re-running resumes instead of restarting.
+    toast("Classify All: " + e.message + " (progress saved per batch — safe to retry)");
+    st.textContent = "interrupted: " + e.message + " — progress saved per batch, re-run to resume.";
+  }
+  $("#loading").style.display = "none";
+  btn.disabled = false;
+};
+
+// ---------------- discover categories (Stage 3, Part 1+2) ----------------
+const D = {rows: [], busy: false};
+function discoverStatus(msg){ $("#discover-status").textContent = msg || ""; }
+function dRender(){
+  const tb = $("#d-rows"); tb.innerHTML = "";
+  D.rows.forEach(r => {
+    if(r._del) return;
+    const unsorted = r.name.toLowerCase() === "unsorted / review";
+    const conf = (r.confidence === undefined || r.confidence === null) ? 0 : r.confidence;
+    const ex = (r.examples||[]).map(x=>`<div title="${esc(x)}">${esc(x)}</div>`).join("");
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${unsorted ? `<b>${esc(r.name)}</b>` : `<input class="dname" value="${esc(r.name)}">`}</td>
+      <td>${unsorted ? `<span class="dim">${esc(r.description||"")}</span>` : `<textarea class="ddesc">${esc(r.description||"")}</textarea>`}</td>
+      <td class="dcount">${r.count ?? 0}</td>
+      <td class="dconf">${Math.round(conf*100)}%</td>
+      <td><span class="dex">${ex || "<div>—</div>"}</span></td>
+      <td>${unsorted ? "" : `<button class="small danger ddel" title="remove this category">✕</button>`}</td>`;
+    if(!unsorted){
+      tr.querySelector(".dname").oninput = e => { r.name = e.target.value; };
+      tr.querySelector(".ddesc").oninput = e => { r.description = e.target.value; };
+      tr.querySelector(".ddel").onclick = () => { r._del = true; dRender(); };
+    }
+    tb.appendChild(tr);
+  });
+  const core = D.rows.filter(r => !r._del && r.name.toLowerCase() !== "unsorted / review").length;
+  $("#d-note").textContent = core + " categories";
+}
+function dCollect(){
+  const tail = D.rows.find(r => r.name.toLowerCase() === "unsorted / review" && !r._del);
+  const cats = D.rows
+    .filter(r => !r._del && r.name.toLowerCase() !== "unsorted / review")
+    .map(r => ({name: (r.name||"").trim(), description: (r.description||"").trim()}))
+    .filter(r => r.name);
+  if(tail) cats.push({name: tail.name, description: tail.description || ""});
+  return cats;
+}
+async function doDiscover(){
+  if(D.busy) return;
+  D.busy = true;
+  $("#btn-discover").disabled = true;
+  discoverStatus("Analyzing the whole library locally, then asking the AI… (heuristic fallback if AI 502s)");
+  try{
+    const engine = aiEngine();
+    const j = await post("/api/discover", {engine, cloud_ok: cloudOk()});
+    D.rows = (j.proposal.categories||[]).slice();
+    const fb = j.proposal.fallback ? " (AI failed → heuristic fallback" +
+      (j.proposal.ai_error ? ": " + j.proposal.ai_error : "") + ")" : "";
+    $("#d-meta").textContent =
+      `collection: ${j.proposal.collection_size} bookmarks · requested: ${engine} · engine: ${j.proposal.engine}${fb}` +
+      (j.proposal.accepted ? " · a previously accepted structure exists" : "") +
+      `\nThese are LOCAL folders (not X folders). ✕ removes a proposal row before Accept.`;
+    dRender();
+    $("#discover-modal").classList.add("open");
+    discoverStatus(`proposal ready [${j.proposal.engine}] — review, edit, ✕ to delete rows, then Accept`);
+    await refreshState();
+  }catch(e){ toast("Discover: " + e.message + " (proposal preserved if it completed — reopen to check)"); discoverStatus("failed: " + e.message); }
+  D.busy = false; $("#btn-discover").disabled = false;
+}
+async function restoreProposal(){
+  try{
+    const j = await api("/api/discover");
+    if(j.ok && j.proposal){
+      D.rows = (j.proposal.categories||[]).slice();
+      $("#d-meta").textContent =
+        `collection: ${j.proposal.collection_size} bookmarks · engine: ${j.proposal.engine}` +
+        (j.proposal.accepted ? " · accepted" : " · not accepted yet");
+      dRender();
+      discoverStatus("last proposal: " +
+        (j.proposal.accepted ? "accepted ✓" : "review & accept to enable classification"));
+    } else {
+      discoverStatus("");
+    }
+  }catch(e){}
+}
+async function acceptStructure(){
+  const cats = dCollect();
+  if(!cats.length) return toast("nothing to accept — keep or add at least one category");
+  try{
+    await post("/api/discover/accept", {categories: cats});
+    $("#discover-modal").classList.remove("open");
+    discoverStatus("structure accepted ✓ — next: Classify All");
+    toast("category structure accepted (" + cats.length + ")");
+    S.selected.clear(); await refreshState(); load(true);
+  }catch(e){ toast(e.message); }
+}
+$("#btn-discover").onclick = doDiscover;
+$("#d-close").onclick = () => $("#discover-modal").classList.remove("open");
+$("#d-add").onclick = () => {
+  D.rows.push({name: "New category", description: "", count: 0,
+               confidence: 1.0, examples: []});
+  dRender();
+};
+$("#d-accept").onclick = acceptStructure;
+$("#btn-logout").onclick = async ()=>{
+  if(!confirm("Log out?")) return;
+  try{ await post("/logout", {}); }catch(e){}
+  location.href = "/login";
+};
+$("#btn-aitest").onclick = async ()=>{
+  const box = $("#ai-status");
+  box.dataset.touched = "1";
+  box.textContent = "testing " + aiEngine() + "…";
+  try{
+    const r = await post("/api/ai-test", {provider: aiEngine()});
+    box.textContent = r.ok ? `✓ ${r.provider} OK (${r.model})`
+      : `✗ ${r.provider}: ${r.error || "failed"} (model ${r.model || "?"})`;
+  }catch(e){ box.textContent = "test failed: " + e.message; }
+};
+restoreProposal();
+
+// ---------------- infinite scroll & boot ----------------
+new IntersectionObserver(es=>{
+  if(es[0].isIntersecting) load(false);
+},{rootMargin:"300px"}).observe($("#sentinel"));
+(async function boot(){
+  try{ await refreshState(); await load(true); }
+  catch(e){ $("#meta").textContent = "load failed: " + e.message; }
+})();
+</script>
+</body>
+</html>
