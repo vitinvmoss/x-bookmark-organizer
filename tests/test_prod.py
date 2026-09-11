@@ -161,7 +161,7 @@ class AuthTest(unittest.TestCase):
 
 class ProviderUnitTest(unittest.TestCase):
     def test_defaults(self):
-        self.assertEqual(LLM.DEFAULT_GEMINI_MODEL, "gemini-2.0-flash")
+        self.assertEqual(LLM.DEFAULT_GEMINI_MODEL, "gemini-3.8-flash")
         self.assertEqual(LLM.provider_default(), "gemini")
         st = LLM.configured_provider_status()
         self.assertFalse(st["gemini"]["configured"])

@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
 

@@ -242,7 +242,7 @@ target is `server.py` (Flask + gunicorn):
 |---|---|---|
 | `LLM_PROVIDER` | default AI provider: `gemini`/`groq`/`openrouter`/`heuristic` | `gemini` |
 | `GEMINI_API_KEY` | Google Gemini key (server-side only) | empty |
-| `GEMINI_MODEL` | Gemini model | `gemini-2.0-flash` |
+| `GEMINI_MODEL` | Gemini model | `gemini-3.8-flash` |
 | `GEMINI_TIMEOUT` | per-request timeout s (5–60) | `25` |
 | `GROQ_API_KEY` / `GROQ_MODEL` | optional Groq fallback | `llama-3.1-8b-instant` |
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | optional OpenRouter fallback | `meta-llama/llama-3.1-8b-instruct:free` |
@@ -258,7 +258,7 @@ never commit passwords. `render.yaml` contains no secrets.
 
 ### AI providers
 
-- Default provider is **Gemini** (`gemini-2.0-flash`, free Flash tier).
+- Default provider is **Gemini** (`gemini-3.8-flash`, free Flash tier).
 - Configure: set `GEMINI_API_KEY` (+ optional `GEMINI_MODEL`); Groq and
   OpenRouter work the same way via their `_API_KEY`/`_MODEL` vars.
 - Only one key is required. If the selected hosted provider fails
