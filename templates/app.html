@@ -257,6 +257,7 @@ select.mini,input.mini{padding:2px 6px;font-size:12px;border-radius:8px}
   <div class="dbox">
     <h2>✨ Discover Categories</h2>
     <div class="meta" id="d-meta"></div>
+    <div id="d-status" style="margin:6px 0;font-size:13px"></div>
     <table class="dtable">
       <thead><tr>
         <th style="width:26%">Category</th>
@@ -270,6 +271,8 @@ select.mini,input.mini{padding:2px 6px;font-size:12px;border-radius:8px}
     </table>
     <div class="dfoot">
       <button id="d-add">+ Create category</button>
+      <button id="d-retry" class="small" style="display:none" title="Rerun discovery from the saved collection with Gemini (no re-upload, no auto-accept)">↻ Retry with Gemini</button>
+      <button id="d-heuristic" class="small" style="display:none" title="Explicitly generate an offline heuristic proposal (never presented as AI)">Use heuristic fallback</button>
       <span class="spacer"></span>
       <span class="dim" id="d-note"></span>
       <button id="d-accept" class="primary">Accept Category Structure</button>
@@ -822,27 +825,92 @@ function dCollect(){
   if(tail) cats.push({name: tail.name, description: tail.description || ""});
   return cats;
 }
+function dStatusBadge(p, requested){
+  const box = $("#d-status");
+  const retryBtn = $("#d-retry");
+  const heurBtn = $("#d-heuristic");
+  if(retryBtn) retryBtn.style.display = "none";
+  if(heurBtn) heurBtn.style.display = "none";
+  if(!p){ if(box) box.innerHTML = ""; return; }
+  const kind = p.error_kind || (p.fallback ? "fallback_transient" : "succeeded");
+  const used = p.provider_used || p.engine || "";
+  const fb = !!p.fallback;
+  let html = "", showRetry = false, showHeur = false;
+  if(!fb && (used === "gemini" || used === "groq" || used === "openrouter" || used === "ai")){
+    html = `<span class="badge high">✓ ${esc(used)} succeeded</span> <span class="dim">AI-generated proposal — review then Accept.</span>`;
+  } else if(fb && kind === "not_configured"){
+    html = `<span class="badge">⚙ ${esc(used === "heuristic" ? "heuristic" : used)} — Gemini not configured</span> <span class="dim">${esc(p.ai_error || "Set GEMINI_API_KEY and tick 'Use cloud AI' to use Gemini.")} This proposal is heuristic, not AI-generated.</span>`;
+    showRetry = true; showHeur = false;
+  } else if(fb && kind === "invalid_output"){
+    html = `<span class="badge lowconf">✗ Gemini returned invalid structured output — heuristic fallback</span> <span class="dim">${esc(p.ai_error || "")}</span>`;
+    showRetry = true; showHeur = true;
+  } else if(fb){
+    html = `<span class="badge med">⚠ heuristic fallback — Gemini failed</span> <span class="dim">${esc(p.ai_error || "provider error")} · retries: ${p.diagnostics ? p.diagnostics.retries : 0}. This proposal is heuristic, not AI-generated.</span>`;
+    showRetry = true; showHeur = true;
+  } else {
+    html = `<span class="badge">heuristic (offline)</span> <span class="dim">Offline proposal — never sent anywhere.</span>`;
+  }
+  if(p.cloud_gate) html += ` <span class="dim">${esc(p.cloud_gate)}</span>`;
+  box.innerHTML = html;
+  if(showRetry && retryBtn) retryBtn.style.display = "";
+  if(showHeur && heurBtn) heurBtn.style.display = "";
+}
+function dMetaText(p, requested){
+  const fb = p.fallback ? " (AI failed → heuristic fallback" +
+    (p.ai_error ? ": " + p.ai_error : "") + ")" : "";
+  return `collection: ${p.collection_size} bookmarks · requested: ${requested || p.engine_requested || p.engine} · engine: ${p.engine}${fb}` +
+    (p.accepted ? " · a previously accepted structure exists" : "") +
+    `\nThese are LOCAL folders (not X folders). ✕ removes a proposal row before Accept.`;
+}
 async function doDiscover(){
   if(D.busy) return;
   D.busy = true;
   $("#btn-discover").disabled = true;
-  discoverStatus("Analyzing the whole library locally, then asking the AI… (heuristic fallback if AI 502s)");
+  discoverStatus("Analyzing the whole library locally, then asking the AI… (heuristic fallback if AI fails)");
   try{
     const engine = aiEngine();
     const j = await post("/api/discover", {engine, cloud_ok: cloudOk()});
     D.rows = (j.proposal.categories||[]).slice();
-    const fb = j.proposal.fallback ? " (AI failed → heuristic fallback" +
-      (j.proposal.ai_error ? ": " + j.proposal.ai_error : "") + ")" : "";
-    $("#d-meta").textContent =
-      `collection: ${j.proposal.collection_size} bookmarks · requested: ${engine} · engine: ${j.proposal.engine}${fb}` +
-      (j.proposal.accepted ? " · a previously accepted structure exists" : "") +
-      `\nThese are LOCAL folders (not X folders). ✕ removes a proposal row before Accept.`;
+    $("#d-meta").textContent = dMetaText(j.proposal, engine);
+    dStatusBadge(j.proposal, engine);
     dRender();
     $("#discover-modal").classList.add("open");
     discoverStatus(`proposal ready [${j.proposal.engine}] — review, edit, ✕ to delete rows, then Accept`);
     await refreshState();
   }catch(e){ toast("Discover: " + e.message + " (proposal preserved if it completed — reopen to check)"); discoverStatus("failed: " + e.message); }
   D.busy = false; $("#btn-discover").disabled = false;
+}
+async function doRetryGemini(){
+  if(D.busy) return;
+  D.busy = true;
+  discoverStatus("Retrying with Gemini from the saved collection (no re-upload)…");
+  try{
+    const j = await post("/api/discover/retry", {cloud_ok: cloudOk()});
+    D.rows = (j.proposal.categories||[]).slice();
+    $("#d-meta").textContent = dMetaText(j.proposal, j.proposal.engine_requested || "gemini");
+    dStatusBadge(j.proposal, "gemini");
+    dRender();
+    $("#discover-modal").classList.add("open");
+    discoverStatus(`retry ready [${j.proposal.engine}] — review, edit, then Accept (nothing auto-accepted)`);
+    await refreshState();
+  }catch(e){ toast("Retry: " + e.message); discoverStatus("retry failed: " + e.message); }
+  D.busy = false;
+}
+async function doHeuristic(){
+  if(D.busy) return;
+  D.busy = true;
+  discoverStatus("Generating explicit heuristic proposal (offline)…");
+  try{
+    const j = await post("/api/discover/heuristic", {});
+    D.rows = (j.proposal.categories||[]).slice();
+    $("#d-meta").textContent = dMetaText(j.proposal, "heuristic");
+    dStatusBadge(j.proposal, "heuristic");
+    dRender();
+    $("#discover-modal").classList.add("open");
+    discoverStatus("heuristic proposal ready — review then Accept (not AI-generated)");
+    await refreshState();
+  }catch(e){ toast("Heuristic: " + e.message); discoverStatus("heuristic failed: " + e.message); }
+  D.busy = false;
 }
 async function restoreProposal(){
   try{
@@ -852,6 +920,7 @@ async function restoreProposal(){
       $("#d-meta").textContent =
         `collection: ${j.proposal.collection_size} bookmarks · engine: ${j.proposal.engine}` +
         (j.proposal.accepted ? " · accepted" : " · not accepted yet");
+      dStatusBadge(j.proposal, j.proposal.engine_requested || j.proposal.engine);
       dRender();
       discoverStatus("last proposal: " +
         (j.proposal.accepted ? "accepted ✓" : "review & accept to enable classification"));
@@ -872,6 +941,8 @@ async function acceptStructure(){
   }catch(e){ toast(e.message); }
 }
 $("#btn-discover").onclick = doDiscover;
+$("#d-retry").onclick = doRetryGemini;
+$("#d-heuristic").onclick = doHeuristic;
 $("#d-close").onclick = () => $("#discover-modal").classList.remove("open");
 $("#d-add").onclick = () => {
   D.rows.push({name: "New category", description: "", count: 0,

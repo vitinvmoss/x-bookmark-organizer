@@ -22,6 +22,16 @@ DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
 
 PROVIDERS = ("gemini", "groq", "openrouter", "heuristic")
 
+# Retryable transient statuses: exactly one controlled retry, short bounded
+# backoff. Anything else (400/401/403/404) fails fast with an actionable
+# message — never silently retried, never silently switched providers.
+RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+RETRY_BACKOFF_S = 0.8
+
+# Carries the safe diagnostics of the most recent hosted call for
+# categories.py / server.py to label results without logging secrets.
+LAST_DIAGNOSTICS: dict = {}
+
 
 def _bounded_timeout(raw, default=25):
     try:
@@ -67,22 +77,90 @@ def configured_provider_status():
     }
 
 
+def _redact_secrets(text):
+    """Redact anything key-like plus the actual configured key values."""
+    import re as _re
+    s = str(text or "")
+    # Never let a real configured key value appear in logs/errors.
+    for env in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
+                "XBO_AI_KEY"):
+        try:
+            v = os.environ.get(env) or ""
+        except Exception:
+            v = ""
+        if v and len(v) >= 4 and v in s:
+            s = s.replace(v, "[redacted]")
+    s = _re.sub(r"(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+)", "Bearer [redacted]",
+                s)
+    s = _re.sub(r"(?i)\b(sk-[A-Za-z0-9\-_]{4,}|xox[bpas]-[A-Za-z0-9\-]+)",
+                "[redacted]", s)
+    s = _re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)\S+", r"\1[redacted]", s)
+    s = _re.sub(r"(?i)(x-goog-api-key\s*[:=]\s*)\S+", r"\1[redacted]", s)
+    s = _re.sub(r"(?i)([?&]key\s*=\s*)[^&\s]+", r"\1[redacted]", s)
+    return s
+
+
+def _read_http_body(exc, limit=500):
+    """Safely extract provider error text (truncated, redacted).
+
+    Only the provider's error payload — never prompts, bookmark contents,
+    headers, cookies, or secrets.
+    """
+    try:
+        raw = exc.read() if hasattr(exc, "read") else b""
+    except Exception:
+        return ""
+    try:
+        if isinstance(raw, bytes):
+            txt = raw.decode("utf-8", errors="ignore")
+        else:
+            txt = str(raw or "")
+    except Exception:
+        return ""
+    txt = _redact_secrets(txt)
+    # keep it one line-ish and bounded
+    txt = " ".join(txt.split())
+    return txt[:limit]
+
+
 def _safe_error(exc):
     """Map provider failures to safe, user-facing messages (no keys)."""
     import re as _re
     if isinstance(exc, urllib.error.HTTPError):
         code = exc.code
+        body = _read_http_body(exc)
+        # Model-not-found is actionable — tell the operator exactly what
+        # to check instead of silently producing poor categories.
+        low = body.lower()
+        if code in (400, 404) and (
+                "not found" in low or "not_found" in low
+                or "unknown model" in low or "invalid model" in low
+                or "model_not_found" in low or "unsupported model" in low):
+            base = ("model unavailable (HTTP %d). Check GEMINI_MODEL "
+                    "(current default 'gemini-3.8-flash') and the "
+                    "provider dashboard" % code)
+            if body:
+                return "%s: %s" % (base, body[:200])
+            return base
         if code == 400:
-            return "provider rejected the request (HTTP 400, bad request)"
-        if code == 401:
-            return "invalid API key (HTTP 401)"
-        if code == 403:
-            return "API key lacks permission (HTTP 403)"
-        if code == 429:
-            return "rate limited / quota exhausted (HTTP 429)"
-        if 500 <= code <= 599:
-            return "provider server error (HTTP %d)" % code
-        return "provider HTTP error %d" % code
+            base = "provider rejected the request (HTTP 400, bad request)"
+        elif code == 401:
+            base = "invalid API key (HTTP 401)"
+        elif code == 403:
+            base = "API key lacks permission (HTTP 403)"
+        elif code == 429:
+            base = "rate limited / quota exhausted (HTTP 429)"
+        elif code == 404:
+            base = ("model or endpoint not found (HTTP 404). Check "
+                    "GEMINI_MODEL (default 'gemini-3.8-flash')")
+        elif 500 <= code <= 599:
+            base = "provider server error (HTTP %d)" % code
+        else:
+            base = "provider HTTP error %d" % code
+        if body:
+            # provider error text only, truncated, already redacted
+            return "%s: %s" % (base, body[:200])
+        return base
     name = type(exc).__name__
     msg = str(exc)[:160]
     if "timed out" in msg.lower() or "timeout" in name.lower() or "Timeout" in name:
@@ -95,13 +173,77 @@ def _safe_error(exc):
     if "quota" in msg.lower() or "exhaust" in msg.lower():
         return "provider quota exhausted"
     # redact anything key-like before cleaning; never leak raw bodies/keys
-    msg = _re.sub(r"(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+)", "Bearer [redacted]",
-                  msg)
-    msg = _re.sub(r"(?i)\b(sk-[A-Za-z0-9\-_]{4,}|xox[bpas]-[A-Za-z0-9\-]+)",
-                  "[redacted]", msg)
-    msg = _re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)\S+", r"\1[redacted]", msg)
+    msg = _redact_secrets(msg)
     clean = "".join(c for c in msg if c.isalnum() or c in " .,:;()-_%[]")
     return "%s: %s" % (name, clean[:140] or "request failed")
+
+
+def gemini_request_info(model=None, timeout=None):
+    """Safe request facts for diagnostics (no key, no prompt, no headers).
+
+    Returns the exact endpoint URL (key-free), model name, and timeout so
+    operators can verify what was called without exposing secrets.
+    """
+    m = model or model_for("gemini")
+    t = timeout or llm_timeout()
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/%s"
+           ":generateContent" % m)
+    return {"provider": "gemini", "model": m, "url": url, "timeout_s": t}
+
+
+def describe_error(provider, model, exc, retries):
+    """Safe diagnostics dict: provider, model, HTTP status, error text<=500,
+    retry count. No prompts, contents, headers, cookies, or secrets."""
+    status = getattr(exc, "code", None) if isinstance(
+        exc, urllib.error.HTTPError) else None
+    if isinstance(exc, urllib.error.HTTPError):
+        err_text = _read_http_body(exc, limit=500)
+        if not err_text:
+            # fall back to the mapped safe message (already redacted)
+            try:
+                err_text = _safe_error(exc)[:500]
+            except Exception:
+                err_text = "provider HTTP error %s" % (status,)
+    else:
+        try:
+            err_text = _redact_secrets(str(exc))[:500]
+        except Exception:
+            err_text = "request failed"
+        # belt-and-suspenders: strip anything that looks like a secret
+        err_text = " ".join(str(err_text).split())[:500]
+    # final guarantee: configured key values never appear
+    err_text = _redact_secrets(err_text)[:500]
+    info = {"provider": (provider or "gemini"),
+            "model": (model or model_for(provider or "gemini")),
+            "http_status": status,
+            "error": err_text,
+            "retries": int(retries or 0)}
+    try:
+        LAST_DIAGNOSTICS.clear()
+        LAST_DIAGNOSTICS.update(info)
+    except Exception:
+        pass
+    return dict(info)
+
+
+def is_model_unavailable(exc):
+    """True when the provider response clearly proves a bad model name."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return False
+    if exc.code not in (400, 404):
+        return False
+    try:
+        body = _read_http_body(exc, limit=500).lower()
+    except Exception:
+        body = ""
+    keys = ("not found", "not_found", "unknown model", "invalid model",
+            "model_not_found", "unsupported model")
+    return any(k in body for k in keys)
+
+
+def is_invalid_output_error(exc):
+    msg = str(exc or "").lower()
+    return "malformed json" in msg or "invalid structured" in msg
 
 
 def _post_json(url, payload, headers, timeout):
@@ -117,10 +259,9 @@ def _gemini_call(prompt_text, model, timeout):
         raise RuntimeError("GEMINI_API_KEY not configured")
     url = ("https://generativelanguage.googleapis.com/v1beta/models/%s"
            ":generateContent" % model)
-    # key passed as query param by urllib to avoid header logging; stdlib
-    # only — never sent to browser. Use header instead to keep URL clean:
-    url += "?key=" + key if False else ""
     # NOTE: key must travel server-side only; attach as x-goog-api-key header
+    # (never in the URL, never to the browser). Only bookmark text snippets
+    # are sent, and only to this configured Gemini endpoint.
     payload = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4000,
@@ -128,27 +269,82 @@ def _gemini_call(prompt_text, model, timeout):
     }
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
     last = None
+    retries = 0
     for _attempt in range(2):  # 1 initial + 1 controlled retry max
         try:
-            data = _post_json(url, payload, headers, timeout)
+            try:
+                data = _post_json(url, payload, headers, timeout)
+            except ValueError as ve:
+                # JSON decode of a 200 response -> invalid structured output
+                raise ValueError(
+                    "provider returned malformed JSON (%s)"
+                    % _redact_secrets(str(ve))[:120])
+            if not isinstance(data, dict):
+                raise ValueError(
+                    "provider returned malformed JSON (bad envelope)")
+            # API-level error delivered as 200 JSON: surface safely.
+            if data.get("error"):
+                try:
+                    em = json.dumps(data["error"])[:500]
+                except Exception:
+                    em = str(data.get("error"))[:500]
+                raise ValueError("provider returned malformed JSON "
+                                 "(api error: %s)" % _redact_secrets(em)[:200])
             cands = (data.get("candidates") or [])
             parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
             text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
             if not text.strip():
-                # block/empty → treat as malformed
+                # block/empty → treat as malformed (invalid structured output)
                 raise ValueError("provider returned malformed JSON (empty candidates)")
+            describe_error("gemini", model, RuntimeError("ok"), retries) \
+                if False else None
+            try:
+                LAST_DIAGNOSTICS.clear()
+                LAST_DIAGNOSTICS.update(
+                    {"provider": "gemini", "model": model,
+                     "http_status": 200, "error": "", "retries": retries})
+            except Exception:
+                pass
             return text
         except urllib.error.HTTPError as e:
-            # retry only transient 429/5xx, once
-            if e.code in (429,) or 500 <= e.code <= 599:
+            # retry only transient 429/500/502/503/504, exactly once
+            if e.code in RETRYABLE_STATUS and _attempt == 0:
                 last = e
-                time.sleep(1.0)
+                retries = 1
+                time.sleep(RETRY_BACKOFF_S)
                 continue
+            try:
+                describe_error("gemini", model, e, retries)
+            except Exception:
+                pass
+            # tag retry count for callers that inspect the exception
+            try:
+                e._llm_retries = retries  # type: ignore[attr-defined]
+            except Exception:
+                pass
             raise
         except (TimeoutError, OSError) as e:
-            last = e
-            time.sleep(1.0)
-            continue
+            # URLError wraps OSError; retry once on transient IO/timeout
+            if "URLError" in type(e).__name__ or isinstance(
+                    e, (TimeoutError, ConnectionError, OSError)):
+                if _attempt == 0:
+                    last = e
+                    retries = 1
+                    time.sleep(RETRY_BACKOFF_S)
+                    continue
+            try:
+                describe_error("gemini", model, e, retries)
+            except Exception:
+                pass
+            try:
+                e._llm_retries = retries  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            raise
+    try:
+        describe_error("gemini", model, last, retries)
+    except Exception:
+        pass
     raise last
 
 
@@ -164,19 +360,22 @@ def _openai_compat_call(base, key, model, messages, timeout):
         try:
             data = _post_json(base.rstrip("/") + "/chat/completions",
                               payload, headers, timeout)
-            return data["choices"][0]["message"]["content"]
+            try:
+                return data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError, AttributeError):
+                raise ValueError("provider returned malformed JSON (bad chat envelope)")
         except urllib.error.HTTPError as e:
-            if e.code in (429,) or 500 <= e.code <= 599:
+            if e.code in RETRYABLE_STATUS and _attempt == 0:
                 last = e
-                time.sleep(1.0)
+                time.sleep(RETRY_BACKOFF_S)
                 continue
             raise
-        except (TimeoutError, OSError, KeyError, IndexError) as e:
-            last = e
-            if isinstance(e, (KeyError, IndexError)):
-                raise ValueError("provider returned malformed JSON (bad chat envelope)")
-            time.sleep(1.0)
-            continue
+        except (TimeoutError, OSError) as e:
+            if _attempt == 0:
+                last = e
+                time.sleep(RETRY_BACKOFF_S)
+                continue
+            raise
     raise last
 
 
@@ -222,7 +421,11 @@ def chat_json(provider, messages, model=None, timeout=None):
     try:
         return parse_json_array_or_obj(text)
     except (json.JSONDecodeError, ValueError) as e:
-        raise ValueError("provider returned malformed JSON (%s)" % str(e)[:120])
+        # Never include prompts/bookmark text — only the safe parser hint.
+        detail = _redact_secrets(str(e))[:120]
+        detail = "".join(
+            c for c in detail if c.isalnum() or c in " .,:;()-_%[]")[:120]
+        raise ValueError("provider returned malformed JSON (%s)" % detail)
 
 
 def classify_prompt(names, chunk_payload, corrections=None):

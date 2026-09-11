@@ -918,9 +918,9 @@ def create_app():
         eff = "heuristic" if gate else engine
         try:
             min_c = int(body.get("min_categories") or 8)
-            max_c = int(body.get("max_categories") or 20)
+            max_c = int(body.get("max_categories") or 15)
         except (TypeError, ValueError):
-            min_c, max_c = 8, 20
+            min_c, max_c = 8, 15
         try:
             res = CAT.discover_structure(
                 kb(), engine=eff, model=body.get("model"),
@@ -931,6 +931,79 @@ def create_app():
         if gate:
             res = dict(res, cloud_gate="heuristic fallback (opt-in "
                                        "required)")
+        return jsonify({"ok": True, "proposal": res})
+
+    @app.post("/api/discover/retry")
+    @login_required
+    @require_csrf
+    def api_discover_retry():
+        """Retry with Gemini: rerun discovery from the stored collection.
+
+        Never duplicates or persists previous proposals (overwrites the
+        proposal file), never requires re-upload, never auto-accepts.
+        Bookmarks are untouched; only category_structure.json is
+        rewritten. Hosted engines still require cloud_ok=true.
+        """
+        body = _body()
+        # Default to the previously requested hosted engine, else gemini.
+        prev = {}
+        try:
+            prev = CAT.get_proposal(kb())[0] or {}
+        except Exception:
+            prev = {}
+        engine = str((body or {}).get("engine")
+                     or prev.get("engine_requested")
+                     or prev.get("provider_requested")
+                     or LLM.provider_default() or "gemini").lower()
+        if engine in ("heuristic", "ai"):
+            # Retry means a hosted attempt; explicit heuristic has its own
+            # endpoint. Map legacy "ai" -> default hosted.
+            engine = LLM.provider_default() if LLM.provider_default() \
+                != "heuristic" else "gemini"
+        if engine not in ("gemini", "groq", "openrouter"):
+            engine = "gemini"
+        gate = ensure_cloud_opt_in(engine, body)
+        if gate:
+            return gate
+        try:
+            min_c = int(body.get("min_categories")
+                        or prev.get("min_categories") or 8)
+            max_c = int(body.get("max_categories")
+                        or prev.get("max_categories") or 15)
+        except (TypeError, ValueError):
+            min_c, max_c = 8, 15
+        try:
+            res = CAT.discover_structure(
+                kb(), engine=engine, model=body.get("model"),
+                min_categories=max(1, min(min_c, 30)),
+                max_categories=max(1, min(max_c, 30)))
+        except SystemExit as e:
+            return jsonify({"error": str(e)[:300]}), 400
+        return jsonify({"ok": True, "retried": True, "proposal": res})
+
+    @app.post("/api/discover/heuristic")
+    @login_required
+    @require_csrf
+    def api_discover_heuristic():
+        """Explicit heuristic fallback: only runs when the user asks.
+
+        Heuristic output is always labeled engine=heuristic and never
+        presented as AI-generated.
+        """
+        body = _body()
+        try:
+            min_c = int(body.get("min_categories") or 8)
+            max_c = int(body.get("max_categories") or 15)
+        except (TypeError, ValueError):
+            min_c, max_c = 8, 15
+        try:
+            res = CAT.discover_structure(
+                kb(), engine="heuristic", model=None,
+                min_categories=max(1, min(min_c, 30)),
+                max_categories=max(1, min(max_c, 30)))
+        except SystemExit as e:
+            return jsonify({"error": str(e)[:300]}), 400
+        res = dict(res, explicit_heuristic=True)
         return jsonify({"ok": True, "proposal": res})
 
     @app.post("/api/discover/accept")
