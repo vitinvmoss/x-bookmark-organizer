@@ -351,7 +351,7 @@ def _gemini_call(prompt_text, model, timeout):
     # are sent, and only to this configured Gemini endpoint.
     payload = {
         "contents": [{"parts": [{"text": prompt_text}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8000,
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 32000,
                              "responseMimeType": "application/json"},
     }
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
