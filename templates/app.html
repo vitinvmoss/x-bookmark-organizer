@@ -164,6 +164,7 @@ select.mini,input.mini{padding:2px 6px;font-size:12px;border-radius:8px}
         <option value="gemini">gemini (Google, free Flash tier)</option>
         <option value="groq">groq</option>
         <option value="openrouter">openrouter</option>
+        <option value="cerebras">cerebras</option>
         <option value="heuristic">heuristic (offline)</option>
       </select>
     </div>
@@ -447,7 +448,7 @@ async function refreshState(){
   const llmMode = llm.mode || llm.default_provider || "auto";
   const sel = document.querySelector("#ai-engine");
   if(sel && !sel.dataset.touched && !sel.value){
-    sel.value = (llmMode === "auto" || ["gemini","groq","openrouter","heuristic"].indexOf(llmMode) >= 0)
+    sel.value = (llmMode === "auto" || ["gemini","groq","openrouter","cerebras","heuristic"].indexOf(llmMode) >= 0)
       ? llmMode : "auto";
   }
   const chainLabels = (llm.fallback_chain_labels || []).slice();
@@ -456,7 +457,7 @@ async function refreshState(){
       (chainLabels.length ? chainLabels.join(" → ") : "(none configured)");
   }
   if(stBox && !stBox.dataset.touched){
-    const flags = ["gemini","groq","openrouter"].map(p =>
+    const flags = ["gemini","groq","openrouter","cerebras"].map(p =>
       `${p}:${(llm[p]||{}).configured ? "configured" : "missing"}`).join(" · ");
     stBox.textContent = `provider: ${llmMode} · ${flags}` +
       (llm.heuristic_fallback_enabled ? " · heuristic final fallback ON" : "") +
@@ -938,7 +939,7 @@ function dStatusBadge(p, requested){
       `Nothing was auto-substituted. Use “Retry AI”, or explicitly select ` +
       `the offline heuristic fallback below. (Previously labeled “Retry with Gemini”.)</div>`;
     showRetry = true; showHeur = true;
-  } else if(used === "gemini" || used === "groq" || used === "openrouter" || used === "ai"){
+  } else if(used === "gemini" || used === "groq" || used === "openrouter" || used === "cerebras" || used === "ai"){
     const model = p.model_used || p.model_requested || "?";
     const succ = dTitle(p.successful_provider || used);
     const chain = dChainText(p) || succ;

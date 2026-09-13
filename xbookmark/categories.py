@@ -933,12 +933,13 @@ def _classify_discovery_error(engine, exc, model_name=""):
     """
     from . import llm as _LLM
     prov = (engine or "gemini").lower()
-    if prov not in ("gemini", "groq", "openrouter", "heuristic", "ai",
-                    "auto"):
+    if prov not in ("gemini", "groq", "openrouter", "cerebras",
+                    "heuristic", "ai", "auto"):
         prov = "gemini"
     label = _LLM.PROVIDER_LABELS.get(prov, "AI")
     key_env = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
-               "openrouter": "OPENROUTER_API_KEY"}.get(prov, "an API key")
+               "openrouter": "OPENROUTER_API_KEY",
+               "cerebras": "CEREBRAS_API_KEY"}.get(prov, "an API key")
     retries = int(getattr(exc, "_llm_retries", 0) or 0)
     # Retry counts recorded inside llm._gemini_call live in LAST_DIAGNOSTICS
     try:
@@ -1079,7 +1080,7 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
     """Whole-library discovery: LOCAL clustering pre-pass, then the
     requested engine proposes folders.
 
-    Hosted engines (gemini/groq/openrouter) run a TWO-STAGE process:
+    Hosted engines (gemini/groq/openrouter/cerebras) run a TWO-STAGE process:
     Stage A identifies recurring themes from compact per-bookmark
     evidence (ID/author/URL/truncated text — never full contents in one
     oversized prompt); Stage B turns those themes into 8-15 folder
@@ -1143,7 +1144,7 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
         attempts = []
         fallback_chain = []
         successful_provider = ""
-        hosted = {"ai", "gemini", "groq", "openrouter", "auto"}
+        hosted = {"ai", "gemini", "groq", "openrouter", "cerebras", "auto"}
 
         def _success_diag(prov, mdl):
             try:
@@ -1226,7 +1227,7 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                              (ai_error or "")[:200]))
                     cats = None
             else:
-                # Explicit provider (gemini/groq/openrouter) -> exactly
+                # Explicit provider (gemini/groq/openrouter/cerebras) -> exactly
                 # that provider. auto -> configured providers in
                 # LLM_FALLBACK_PROVIDERS order, then heuristic only when
                 # LLM_ALLOW_HEURISTIC_FALLBACK is enabled.
@@ -1354,7 +1355,8 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
             from . import llm as _LLM3
             _primary3, _ = _LLM3.resolve_run_provider(engine) \
                 if engine in ("ai", "gemini", "groq", "openrouter",
-                              "heuristic", "auto") else ("heuristic", None)
+                              "cerebras", "heuristic", "auto") \
+                else ("heuristic", None)
             _model3 = successful_model or (
                 model or (_LLM3.model_for(_primary3)
                           if _primary3 != "heuristic" else ""))

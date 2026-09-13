@@ -7,7 +7,7 @@ from . import store, util
 
 BATCH = 20
 
-HOSTED_ENGINES = {"ai", "gemini", "groq", "openrouter"}
+HOSTED_ENGINES = {"ai", "gemini", "groq", "openrouter", "cerebras"}
 
 
 def _hosted_chat_json(engine, messages, model=None, max_tokens=4000):
@@ -19,7 +19,7 @@ def _hosted_chat_json(engine, messages, model=None, max_tokens=4000):
     """
     from . import llm as LLM
     eng = (engine or "ai").lower()
-    if eng in ("gemini", "groq", "openrouter"):
+    if eng in ("gemini", "groq", "openrouter", "cerebras"):
         primary, secondary = LLM.resolve_run_provider(eng)
         last_err = RuntimeError("no hosted provider configured")
         for prov in [p for p in (primary, secondary) if p and p != "heuristic"]:
@@ -552,8 +552,8 @@ def classify_all(kb, engine="ai", model=None, batch_size=BATCH,
             "provider_used": _used,
             "provider_actually_used": _used,
             "mode": _mode if _mode in (
-                "gemini", "groq", "openrouter", "heuristic", "mixed",
-                "ai") else "heuristic",
+                "gemini", "groq", "openrouter", "cerebras", "heuristic",
+                "mixed", "ai") else "heuristic",
             "successful_batches": ai_ok, "failed_batches": ai_fail,
             "fallback_batches": heuristic_fills,
             "ai_batches": ai_ok, "ai_failures": ai_fail,
@@ -568,7 +568,7 @@ def classify_all(kb, engine="ai", model=None, batch_size=BATCH,
 def _classify_mode(engine, ai_ok, heuristic_fills):
     if engine not in HOSTED_ENGINES:
         return "heuristic"
-    if engine in ("gemini", "groq", "openrouter"):
+    if engine in ("gemini", "groq", "openrouter", "cerebras"):
         if ai_ok and heuristic_fills:
             return "mixed"
         if ai_ok:

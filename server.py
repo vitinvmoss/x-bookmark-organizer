@@ -34,8 +34,8 @@ from xbookmark import ai as LEGACY_AI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-ALLOWED_ENGINES = {"auto", "gemini", "groq", "openrouter", "heuristic",
-                   "ai"}
+ALLOWED_ENGINES = {"auto", "gemini", "groq", "openrouter", "cerebras",
+                   "heuristic", "ai"}
 
 REVIEW_EXPLAINER = ("Needs Review contains bookmarks whose classification is "
                     "uncertain, usually because confidence is below 0.60, or "
@@ -203,13 +203,14 @@ def create_app():
             if not LLM.configured_hosted_providers():
                 return jsonify({
                     "error": "no AI provider is configured for auto mode; "
-                             "add GEMINI_API_KEY, GROQ_API_KEY, or "
-                             "OPENROUTER_API_KEY, or choose the offline "
-                             "heuristic explicitly",
+                             "add GEMINI_API_KEY, GROQ_API_KEY, "
+                             "OPENROUTER_API_KEY, or CEREBRAS_API_KEY, or "
+                             "choose the offline heuristic explicitly",
                     "fallback": "heuristic"}), 400
             return None
         key_env = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
-                   "openrouter": "OPENROUTER_API_KEY"}.get(engine, "")
+                   "openrouter": "OPENROUTER_API_KEY",
+                   "cerebras": "CEREBRAS_API_KEY"}.get(engine, "")
         if key_env and not os.environ.get(key_env):
             return jsonify({"error": "%s not configured (set %s); choose "
                                      "the offline heuristic explicitly if "
@@ -360,7 +361,7 @@ def create_app():
         provider = str(body.get("provider") or LLM.provider_default()
                        ).lower()
         if provider not in ("auto", "gemini", "groq", "openrouter",
-                            "heuristic"):
+                            "cerebras", "heuristic"):
             return jsonify({"ok": False,
                             "error": "unknown provider"}), 400
         model = body.get("model")
@@ -995,9 +996,10 @@ def create_app():
             engine = LLM.provider_default()
             if engine == "heuristic":
                 engine = LLM.primary_hosted_provider() or "gemini"
-        if engine not in ("auto", "gemini", "groq", "openrouter"):
+        if engine not in ("auto", "gemini", "groq", "openrouter", "cerebras"):
             engine = LLM.provider_default() if LLM.provider_default() \
-                in ("auto", "gemini", "groq", "openrouter") else "gemini"
+                in ("auto", "gemini", "groq", "openrouter", "cerebras") \
+                else "gemini"
         gate = ensure_cloud_opt_in(engine, body)
         if gate:
             return gate

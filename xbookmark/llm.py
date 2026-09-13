@@ -1,12 +1,12 @@
-"""Hosted LLM provider layer: gemini / groq / openrouter / heuristic.
+"""Hosted LLM provider layer: gemini / groq / openrouter / cerebras / heuristic.
 
 Providers are isolated behind a small adapter interface (see the
 ``Provider`` classes near the bottom of this module) so callers such as
 ``categories.py`` never need to know how an individual HTTP API works.
 The layer also owns the provider preference/fallback chain:
 
-  LLM_PROVIDER=auto|gemini|groq|openrouter|heuristic
-  LLM_FALLBACK_PROVIDERS=gemini,groq,openrouter
+  LLM_PROVIDER=auto|gemini|groq|openrouter|cerebras|heuristic
+  LLM_FALLBACK_PROVIDERS=gemini,groq,openrouter,cerebras
   LLM_ALLOW_HEURISTIC_FALLBACK=false
 
 When mode is ``auto`` the configured hosted providers are tried in the
@@ -31,20 +31,23 @@ import urllib.request
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
 DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-20b:free"
+DEFAULT_CEREBRAS_MODEL = "llama-3.3-70b"
 
-PROVIDERS = ("gemini", "groq", "openrouter", "heuristic")
-HOSTED_PROVIDERS = ("gemini", "groq", "openrouter")
-VALID_MODES = ("auto", "gemini", "groq", "openrouter", "heuristic")
-DEFAULT_FALLBACK_ORDER = ("gemini", "groq", "openrouter")
+PROVIDERS = ("gemini", "groq", "openrouter", "cerebras", "heuristic")
+HOSTED_PROVIDERS = ("gemini", "groq", "openrouter", "cerebras")
+VALID_MODES = ("auto", "gemini", "groq", "openrouter", "cerebras", "heuristic")
+DEFAULT_FALLBACK_ORDER = ("gemini", "groq", "openrouter", "cerebras")
 
 KEY_ENV = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY",
-           "openrouter": "OPENROUTER_API_KEY"}
+           "openrouter": "OPENROUTER_API_KEY", "cerebras": "CEREBRAS_API_KEY"}
 MODEL_ENV = {"gemini": "GEMINI_MODEL", "groq": "GROQ_MODEL",
-             "openrouter": "OPENROUTER_MODEL"}
+             "openrouter": "OPENROUTER_MODEL", "cerebras": "CEREBRAS_MODEL"}
 DEFAULT_MODEL = {"gemini": DEFAULT_GEMINI_MODEL, "groq": DEFAULT_GROQ_MODEL,
-                 "openrouter": DEFAULT_OPENROUTER_MODEL}
+                 "openrouter": DEFAULT_OPENROUTER_MODEL,
+                 "cerebras": DEFAULT_CEREBRAS_MODEL}
 PROVIDER_LABELS = {"gemini": "Gemini", "groq": "Groq",
-                   "openrouter": "OpenRouter", "heuristic": "Heuristic"}
+                   "openrouter": "OpenRouter", "cerebras": "Cerebras",
+                   "heuristic": "Heuristic"}
 
 # Retryable transient statuses: exactly one controlled retry, short bounded
 # backoff. Anything else (400/401/403/404) fails fast with an actionable
@@ -94,6 +97,8 @@ def model_for(provider):
         return os.environ.get("GROQ_MODEL") or DEFAULT_GROQ_MODEL
     if provider == "openrouter":
         return os.environ.get("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL
+    if provider == "cerebras":
+        return os.environ.get("CEREBRAS_MODEL") or DEFAULT_CEREBRAS_MODEL
     return ""
 
 
@@ -157,6 +162,8 @@ def configured_provider_status():
                  "model": os.environ.get("GROQ_MODEL") or DEFAULT_GROQ_MODEL},
         "openrouter": {"configured": bool(os.environ.get("OPENROUTER_API_KEY")),
                        "model": os.environ.get("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL},
+        "cerebras": {"configured": bool(os.environ.get("CEREBRAS_API_KEY")),
+                     "model": os.environ.get("CEREBRAS_MODEL") or DEFAULT_CEREBRAS_MODEL},
         "timeout_s": llm_timeout(),
     }
 
@@ -167,7 +174,7 @@ def _redact_secrets(text):
     s = str(text or "")
     # Never let a real configured key value appear in logs/errors.
     for env in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
-                "XBO_AI_KEY"):
+                "CEREBRAS_API_KEY", "XBO_AI_KEY"):
         try:
             v = os.environ.get(env) or ""
         except Exception:
@@ -578,6 +585,11 @@ def chat_text(provider, messages, model=None, timeout=None):
                                    model or model_for("openrouter"), messages,
                                    timeout, provider="openrouter",
                                    extra_headers=_openrouter_headers())
+    if provider == "cerebras":
+        return _openai_compat_call("https://api.cerebras.ai/v1",
+                                   os.environ.get("CEREBRAS_API_KEY") or "",
+                                   model or model_for("cerebras"), messages,
+                                   timeout, provider="cerebras")
     raise RuntimeError("unknown provider: %s" % provider)
 
 
@@ -654,14 +666,15 @@ def resolve_run_provider(requested):
         hosted = [c for c in resolve_chain_names("auto")
                   if c in HOSTED_PROVIDERS]
         requested = hosted[0] if hosted else "heuristic"
-    if requested not in ("gemini", "groq", "openrouter", "heuristic"):
+    if requested not in ("gemini", "groq", "openrouter", "cerebras", "heuristic"):
         requested = "gemini"
     if requested == "heuristic":
         return "heuristic", None
     # optional second hosted fallback only when its key configured
     secondary = None
     for cand, env in (("gemini", "GEMINI_API_KEY"), ("groq", "GROQ_API_KEY"),
-                      ("openrouter", "OPENROUTER_API_KEY")):
+                       ("openrouter", "OPENROUTER_API_KEY"),
+                       ("cerebras", "CEREBRAS_API_KEY")):
         if cand != requested and os.environ.get(env):
             secondary = cand
             break
@@ -742,6 +755,13 @@ class OpenRouterProvider(Provider):
     default_model = DEFAULT_OPENROUTER_MODEL
 
 
+class CerebrasProvider(Provider):
+    name = "cerebras"
+    key_env = "CEREBRAS_API_KEY"
+    model_env = "CEREBRAS_MODEL"
+    default_model = DEFAULT_CEREBRAS_MODEL
+
+
 class HeuristicProvider(Provider):
     name = "heuristic"
     key_env = ""
@@ -760,6 +780,7 @@ _PROVIDER_CLASSES = {
     "gemini": GeminiProvider,
     "groq": GroqProvider,
     "openrouter": OpenRouterProvider,
+    "cerebras": CerebrasProvider,
     "heuristic": HeuristicProvider,
 }
 
