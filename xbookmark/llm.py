@@ -565,6 +565,50 @@ def _openrouter_headers():
     return extra
 
 
+_MODEL_LIST_ENDPOINTS = {
+    "groq": "https://api.groq.com/openai/v1/models",
+    "cerebras": "https://api.cerebras.ai/v1/models",
+}
+
+_MODEL_LIST_KEYS = {
+    "groq": "GROQ_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+}
+
+_USER_AGENT = ("x-bookmark-organizer/1.0 "
+               "(+https://x-bookmark-organizer.onrender.com)")
+
+
+def list_models(provider):
+    """Return a list of model ID strings for the given provider.
+
+    Read-only diagnostic helper.  Never returns raw responses, headers,
+    or API keys — only a flat list of model ID strings.  Errors are
+    surfaced via ``safe_error`` (no secrets leaked).
+    """
+    provider = (provider or "").lower()
+    if provider not in _MODEL_LIST_ENDPOINTS:
+        return None, "unsupported provider: %s" % provider
+    key = os.environ.get(_MODEL_LIST_KEYS[provider]) or ""
+    if not key:
+        return None, "%s API key not configured" % PROVIDER_LABELS.get(
+            provider, provider)
+    url = _MODEL_LIST_ENDPOINTS[provider]
+    headers = {
+        "Authorization": "Bearer " + key,
+        "User-Agent": _USER_AGENT,
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=llm_timeout()) as resp:
+            body = json.load(resp)
+        models = [m["id"] for m in (body.get("data") or [])
+                  if isinstance(m, dict) and m.get("id")]
+        return models, None
+    except Exception as exc:
+        return None, _safe_error(exc, provider)
+
+
 def chat_text(provider, messages, model=None, timeout=None):
     """Single hosted call returning raw text. Raises with safe errors."""
     provider = (provider or "gemini").lower()

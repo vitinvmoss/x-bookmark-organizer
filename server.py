@@ -394,6 +394,17 @@ def create_app():
                                   else "connection OK")
         return jsonify(payload), 200
 
+    @app.get("/api/models/<provider>")
+    @login_required
+    def api_list_models(provider):
+        provider = (provider or "").lower()
+        if provider not in ("groq", "cerebras"):
+            return jsonify({"error": "unsupported provider"}), 400
+        models, err = LLM.list_models(provider)
+        if err:
+            return jsonify({"error": err}), 400
+        return jsonify({"provider": provider, "models": models})
+
     @app.get("/api/bookmarks")
     @login_required
     def api_bookmarks():
