@@ -795,6 +795,47 @@ def _compact_lines(books, ids, max_lines):
     return lines
 
 
+_SAMPLE_MAX = 150
+
+
+def _sample_bookmarks(books, signals, max_sample=_SAMPLE_MAX, seed=42):
+    """Stratified random sample of bookmarks for the discovery prompt.
+
+    Large collections (~500+) cause HTTP 413 (payload too large) on Groq,
+    60s+ response times and malformed JSON on OpenRouter, and contribute
+    to Gemini timeouts/truncation.  Category discovery doesn't need every
+    bookmark — a representative sample of ~150 is sufficient to identify
+    8-15 broad themes.
+
+    The sample is stratified by tweet_type (post/media/quote/reply) so
+    the distribution matches the full collection.  A fixed seed ensures
+    reproducibility.  Returns the full dict unchanged when the collection
+    is already small enough.
+    """
+    from . import clusters as _CL
+    if len(books) <= max_sample:
+        return books
+    import random as _rand
+    rng = _rand.Random(seed)
+    by_type = {}
+    for tid, b in (books or {}).items():
+        tt = _CL.tweet_type(b)
+        by_type.setdefault(tt, []).append(tid)
+    proportions = {tt: len(ids) / max(1, len(books))
+                   for tt, ids in by_type.items()}
+    budget_by_type = {}
+    remaining = max_sample
+    for tt in sorted(proportions, key=lambda t: -proportions[t]):
+        n = min(remaining, max(1, round(proportions[tt] * max_sample)))
+        budget_by_type[tt] = n
+        remaining -= n
+    sampled_ids = []
+    for tt, ids in by_type.items():
+        n = budget_by_type.get(tt, 0)
+        sampled_ids.extend(rng.sample(ids, min(n, len(ids))))
+    return {tid: books[tid] for tid in sampled_ids if tid in books}
+
+
 def _stage_a_context(clusters, signals, books, user_tags, min_categories,
                      max_categories):
     total = int((signals or {}).get("total", 0) or 0)
@@ -1132,6 +1173,12 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
         user_tags = sorted(merged.items(), key=lambda x: -x[1])
         total = int(signals.get("total", 0) or len(books))
         unsorted = int(signals.get("unclustered", 0) or 0)
+        # Sample large collections for the discovery prompt.  The full
+        # collection causes HTTP 413 on Groq, 60s+ response times and
+        # malformed JSON on OpenRouter, and contributes to Gemini
+        # timeouts/truncation.  A stratified sample of ~150 bookmarks is
+        # sufficient to identify 8-15 broad themes.  `total` stays true.
+        sampled_books = _sample_bookmarks(books, signals)
         cats = None
         used = "heuristic"
         ai_error = ""
@@ -1258,12 +1305,13 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
                         if prov == "heuristic":
                             raw = _structure_heuristic(
                                 clusters, signals, min_categories,
-                                max_categories, books)
+                                max_categories, sampled_books)
                             this_stage = {}
                         else:
                             raw, this_stage = _run_two_stage(
-                                adapter, mdl, clusters, signals, books,
-                                user_tags, min_categories, max_categories)
+                                adapter, mdl, clusters, signals,
+                                sampled_books, user_tags,
+                                min_categories, max_categories)
                         valid, rejected = _strict_validate(
                             raw, books, total, max_categories)
                         _check_valid(valid, rejected, "validation")
@@ -1306,7 +1354,7 @@ def discover_structure(kb, engine="ai", model=None, min_categories=8,
             _h_started = time.time()
             raw_core = _structure_heuristic(clusters, signals,
                                             min_categories, max_categories,
-                                            books)
+                                            sampled_books)
             valid, rejected = _strict_validate(raw_core, books, total,
                                                max_categories)
             if len(valid) < MIN_VALID_PROPOSALS:
