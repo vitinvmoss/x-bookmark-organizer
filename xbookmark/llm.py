@@ -463,7 +463,7 @@ def _openai_compat_call(base, key, model, messages, timeout,
     """OpenAI-compatible chat completions (Groq / OpenRouter).
 
     Requests structured JSON via ``response_format`` when supported. If
-    the selected model rejects that field (400 naming response_format /
+    the selected model rejects that field (400/403 naming response_format /
     json_object), it is dropped once and the plain prompt instruction is
     used — never an unbounded retry loop. One controlled retry for
     transient 429/500/502/503/504/timeouts.
@@ -509,7 +509,7 @@ def _openai_compat_call(base, key, model, messages, timeout,
             return text
         except urllib.error.HTTPError as e:
             # Capability downgrade: model cannot do response_format.
-            if (response_format_supported and e.code == 400
+            if (response_format_supported and e.code in (400, 403)
                     and _mentions_response_format(e)):
                 response_format_supported = False
                 payload.pop("response_format", None)
