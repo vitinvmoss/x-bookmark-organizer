@@ -361,7 +361,8 @@ def _gemini_call(prompt_text, model, timeout):
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 32000,
                              "responseMimeType": "application/json"},
     }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key,
+               "User-Agent": "x-bookmark-organizer/1.0 (+https://x-bookmark-organizer.onrender.com)"}
     last = None
     retries = 0
     for _attempt in range(2):  # 1 initial + 1 controlled retry max
@@ -475,7 +476,8 @@ def _openai_compat_call(base, key, model, messages, timeout,
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     headers = {"Content-Type": "application/json",
-               "Authorization": "Bearer " + key}
+               "Authorization": "Bearer " + key,
+               "User-Agent": "x-bookmark-organizer/1.0 (+https://x-bookmark-organizer.onrender.com)"}
     for k, v in (extra_headers or {}).items():
         if v:
             headers[k] = v
